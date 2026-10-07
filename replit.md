@@ -1,44 +1,56 @@
-# [Project name]
+# Restaurant POS Phase 1
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A local-first Phase 1 point-of-sale app for a small family restaurant, built around dine-in, takeaway, and delivery checkout.
 
 ## Run & Operate
 
+- `pnpm --filter @workspace/restaurant-pos run dev` — run the POS web app (the managed Replit workflow supplies its required environment).
+- `pnpm --filter @workspace/restaurant-pos run typecheck` — check the POS TypeScript.
+- `PORT=5173 BASE_PATH=/ pnpm --filter @workspace/restaurant-pos run build` — build the POS frontend outside the managed workflow.
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- The POS does not use the API server or a database. `DATABASE_URL` is for the separate API-server starter only.
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- POS: React, TypeScript, Vite, and a browser-local repository adapter
+- POS receipts: isolated browser print fallback; no thermal-printer driver is connected
+- The workspace also retains an unused Express/PostgreSQL API starter.
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/restaurant-pos/src/App.tsx` — POS screens and application flows
+- `artifacts/restaurant-pos/src/domain.ts` — POS data types and business models
+- `artifacts/restaurant-pos/src/storage/repository.ts` — seeded local storage and replaceable repository boundary
+- `artifacts/restaurant-pos/src/services/printing.ts` — isolated receipt printing
+- `artifacts/restaurant-pos/src/index.css` — app visual tokens and global styles
+- `artifacts/restaurant-pos/README.md` — usage, demo sign-in, data limits, and local run instructions
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- POS data stays in this browser's local storage behind a repository interface; do not connect it to the Replit database.
+- Receipt rendering and browser printing are isolated so native Windows thermal printing can be added later.
+- The cashier account is development-only and must not be treated as production-grade authentication.
+- Replit preview is for development; Windows offline operation still needs a local app shell and SQLite adapter.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Phase 1 provides staff sign-in, a dashboard, dine-in/takeaway/delivery order creation, payment and receipt preview, dynamic table management, menu/category management, and searchable order history. Sample data is clearly marked; there is no inventory, KDS, KOT, reservations, online ordering, sync, or multi-restaurant support.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Keep the POS local-first and portable to a single Windows 10 restaurant computer; avoid Replit-specific storage and cloud dependencies for core billing.
+- Do not expand beyond the specified Phase 1 feature set.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Browser-local data is tied to this browser profile and is not shared, backed up, or protected from browser-data clearing.
+- Browser printing is not thermal-printer integration. Do not use this build for live restaurant operations until local SQLite persistence, backups, Windows packaging, and printer support are addressed.
+- Next step: run the seven Phase 1 acceptance workflows end-to-end; then implement the Windows local runtime with SQLite and a printer adapter.
 
 ## Pointers
 

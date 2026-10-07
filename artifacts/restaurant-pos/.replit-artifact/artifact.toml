@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Restaurant POS"
+description = "A local-first point-of-sale app for a small family restaurant, with dine-in, takeaway, and delivery orders, menu and table management, checkout, order history, and thermal-friendly receipt previews."
+version = "1.0.0"
+id = "artifacts/restaurant-pos"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24932
+
+[services.development]
+run = "pnpm --filter @workspace/restaurant-pos run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/restaurant-pos", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/restaurant-pos/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24932"
+BASE_PATH = "/"

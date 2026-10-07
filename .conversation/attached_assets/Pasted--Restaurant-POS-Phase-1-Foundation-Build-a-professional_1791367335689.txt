@@ -1,0 +1,469 @@
+# Restaurant POS — Phase 1 Foundation
+
+Build a professional restaurant POS system for a small family-owned restaurant.
+
+IMPORTANT:
+This is the FIRST development phase. Do not try to build every possible restaurant feature. Build a clean, working foundation that we can test and expand in later phases.
+
+The application will initially be developed/tested in Replit, but it MUST be designed so that later we can move it to a Windows 10 PC and run it locally at the restaurant.
+
+## Restaurant Information
+
+Current setup:
+
+- One POS computer
+- Windows 10
+- Approximately 10 menu items initially
+- Tables must be dynamically manageable
+- Start with 1 table, but the manager must be able to add, edit, and remove tables later
+- Order types:
+  1. Dine-in
+  2. Takeaway
+  3. Delivery
+- No kitchen display system in Phase 1
+- No KOT system in Phase 1
+- No inventory system in Phase 1
+- Payment methods:
+  - Cash
+  - Card
+  - Easypaisa
+  - JazzCash
+  - Other
+- A thermal receipt printer will be added later
+- Receipt printing MUST be considered from the beginning so the architecture can support physical Windows printer printing later.
+
+## Core Goal
+
+Create a simple, fast, professional restaurant POS.
+
+The main workflow must be:
+
+Dine-in:
+Select table → Add items → Cart → Checkout → Payment → Receipt → Complete order
+
+Takeaway:
+Takeaway → Add items → Checkout → Payment → Receipt → Complete order
+
+Delivery:
+Delivery → Customer information → Add items → Delivery charge → Checkout → Payment → Receipt → Complete order
+
+## Technology
+
+Use a simple, maintainable technology stack.
+
+Preferred:
+
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
+- SQLite-compatible/local-first data architecture
+
+Do NOT make the application dependent on Replit-specific databases or services.
+
+Avoid unnecessary cloud services.
+
+The code must be portable and easy to run outside Replit later.
+
+If SQLite cannot be used directly in the current Replit browser environment, create a clean database abstraction/repository layer so SQLite can be connected later without rewriting the application's business logic.
+
+Do not use a complicated microservice architecture.
+
+Keep the project simple.
+
+## Phase 1 Screens
+
+Create these screens:
+
+### 1. Login
+
+Simple staff login.
+
+For the initial development version, create a simple local authentication system.
+
+Do not add social login, Google login, or complicated authentication.
+
+### 2. Dashboard
+
+Show:
+
+- Today's sales
+- Today's order count
+- Open tables
+- Completed orders
+- Quick action buttons:
+  - New Dine-in Order
+  - New Takeaway Order
+  - New Delivery Order
+  - Tables
+  - Menu
+  - Orders
+
+Keep the dashboard simple.
+
+### 3. POS Screen
+
+Create a professional restaurant POS interface.
+
+Layout:
+
+LEFT/SIDE:
+- Order type selector:
+  - Dine-in
+  - Takeaway
+  - Delivery
+
+- For Dine-in:
+  - Show available tables
+  - Show occupied tables
+
+- Menu categories
+
+CENTER:
+- Menu item cards
+- Item name
+- Price
+- Optional image
+- Available/unavailable status
+
+RIGHT:
+- Current order/cart
+- Item name
+- Quantity
+- Unit price
+- Total
+- Increase quantity
+- Decrease quantity
+- Remove item
+- Order notes
+
+BOTTOM:
+- Subtotal
+- Discount
+- Delivery charge when applicable
+- Grand total
+- Checkout button
+
+### 4. Tables
+
+Create table management.
+
+Requirements:
+
+- Display tables visually
+- Table number/name
+- Available status
+- Occupied status
+- Add table
+- Edit table
+- Delete table
+
+Start with Table 1.
+
+Do NOT hard-code the restaurant to one table.
+
+The manager must be able to add more tables later.
+
+### 5. Menu Management
+
+Create:
+
+- Categories
+- Menu items
+- Item name
+- Description
+- Price
+- Category
+- Availability
+- Optional image
+
+Allow:
+
+- Add item
+- Edit item
+- Delete item
+- Enable/disable item
+- Add category
+- Edit category
+- Delete category
+
+Initially create sample categories and approximately 10 sample menu items so the POS can be tested.
+
+Make the sample data easy to replace with the restaurant's real menu later.
+
+### 6. Delivery Order
+
+When Delivery is selected, show:
+
+- Customer name
+- Phone number
+- Address
+- Delivery charge
+- Optional notes
+
+These fields should be stored with the order.
+
+### 7. Checkout / Payment
+
+Create a professional payment screen.
+
+Show:
+
+- Subtotal
+- Discount
+- Delivery charge
+- Final total
+
+Payment methods:
+
+- Cash
+- Card
+- Easypaisa
+- JazzCash
+- Other
+
+For Cash:
+
+- Amount received
+- Change to return
+
+For other methods:
+
+- Payment method
+- Optional transaction/reference number
+
+After successful payment:
+
+- Save payment
+- Mark order as completed
+- Generate receipt data
+- Show receipt preview
+- Provide Print Receipt button
+- Provide Reprint Receipt capability later through Orders
+
+IMPORTANT:
+Do not pretend that browser printing is equivalent to thermal printer integration.
+
+Create a clean printing service/abstraction so that later we can connect a Windows thermal receipt printer without changing the POS business logic.
+
+### 8. Orders
+
+Create an Orders page.
+
+Show:
+
+- Order number
+- Date/time
+- Order type
+- Table/customer
+- Total
+- Payment method
+- Status
+
+Allow:
+
+- View order
+- View receipt
+- Reprint receipt
+- Search orders
+- Filter by order type
+- Filter by date
+- Cancel order where appropriate
+
+## Receipt
+
+Create a professional restaurant receipt layout.
+
+Receipt should contain:
+
+- Restaurant name
+- Restaurant address
+- Phone
+- Order number
+- Date/time
+- Cashier
+- Order type
+- Table number if Dine-in
+- Customer details for Delivery
+- Items
+- Quantity
+- Unit price
+- Item total
+- Subtotal
+- Discount
+- Delivery charge
+- Grand total
+- Payment method
+- Amount received for cash
+- Change
+- Thank-you message
+
+Design the receipt for thermal paper.
+
+Use a layout that can later support 58mm/80mm thermal printers.
+
+For now, provide:
+
+- Receipt preview
+- Browser print fallback
+
+But keep the printing code isolated in a printing service.
+
+## Data Architecture
+
+Create clear data models for:
+
+- User
+- RestaurantSettings
+- Table
+- Category
+- MenuItem
+- Order
+- OrderItem
+- Payment
+
+Use IDs and timestamps.
+
+Orders must preserve their items and prices at the time of purchase.
+
+IMPORTANT:
+If a menu item's price changes later, old orders must NOT change.
+
+Use a repository/data-access layer instead of putting database logic directly inside React components.
+
+The architecture should make it easy to replace the temporary development storage with SQLite later.
+
+## Local-First Requirements
+
+This is extremely important.
+
+The final application is intended to run on one Windows 10 restaurant computer.
+
+Therefore:
+
+- Core POS functionality must not require internet.
+- Do not depend on Replit authentication.
+- Do not depend on Replit database.
+- Do not depend on cloud APIs for basic billing.
+- Restaurant data should be locally stored.
+- Keep database access isolated.
+- Keep printing isolated.
+- Keep business logic independent of Replit.
+- Do not hard-code Replit URLs.
+- Do not hard-code the current development environment.
+
+If temporary browser storage is required during this first Replit phase, isolate it behind a repository interface so it can later be replaced by SQLite.
+
+## UI Design
+
+Make the UI professional and suitable for a restaurant cashier.
+
+Requirements:
+
+- Fast navigation
+- Large buttons
+- Easy-to-read prices
+- Clear cart
+- Responsive desktop layout
+- Clean modern design
+- Minimal unnecessary animations
+- Good contrast
+- Keyboard-friendly where practical
+
+This is primarily a desktop application, so optimize for a Windows 10 desktop screen rather than mobile.
+
+Use a consistent restaurant POS design.
+
+## Error Handling
+
+Add basic validation.
+
+Examples:
+
+- Cannot checkout an empty cart.
+- Price must be valid.
+- Quantity must be at least 1.
+- Delivery order should require customer information.
+- Cannot delete a table that currently has an active order without warning.
+- Cannot complete payment if required information is missing.
+
+Show clear user-friendly error messages.
+
+## Seed Data
+
+Create sample restaurant data:
+
+- 1 table
+- Several categories
+- Approximately 10 sample menu items
+- One development cashier account
+
+Clearly mark sample data so it can easily be replaced later.
+
+Do not assume these sample menu items are the restaurant's real menu.
+
+## Development Rules
+
+IMPORTANT:
+
+1. First inspect the existing Replit project.
+2. If the project is empty, initialize it cleanly.
+3. Do not overwrite useful existing files without checking them.
+4. Keep the code modular.
+5. Do not create unnecessary features.
+6. Do not implement inventory yet.
+7. Do not implement kitchen display yet.
+8. Do not implement reservations yet.
+9. Do not implement multi-restaurant SaaS yet.
+10. Do not implement subscriptions yet.
+11. Do not implement online ordering yet.
+12. Do not add unnecessary third-party dependencies.
+13. Do not expose secrets in frontend code.
+14. Add clear comments only where they are useful.
+15. Make sure the application builds successfully.
+
+## Phase 1 Acceptance Test
+
+Before considering Phase 1 complete, verify this complete workflow:
+
+TEST 1:
+Dine-in → Table 1 → Add 2 menu items → Checkout → Cash → Enter amount received → Calculate change → Complete → Show receipt.
+
+TEST 2:
+Takeaway → Add items → Card payment → Complete → Show receipt.
+
+TEST 3:
+Delivery → Enter customer name/phone/address → Add items → Add delivery charge → Easypaisa → Complete → Show receipt.
+
+TEST 4:
+Add a new table → use it for a Dine-in order → complete order.
+
+TEST 5:
+Add a new menu item → it appears in POS → create an order with it.
+
+TEST 6:
+Change a menu item's price → create a new order → verify old completed orders still show their original price.
+
+TEST 7:
+Open Orders → find completed order → open receipt → use Reprint/Print.
+
+## Important Final Instruction
+
+Do NOT build Phase 2 features.
+
+Do NOT add inventory, advanced reporting, kitchen display, KOT, reservations, SaaS, multi-restaurant support, or cloud synchronization yet.
+
+Focus on creating a clean, stable Phase 1 foundation that we can later move from Replit to a Windows 10 local installation.
+
+After implementation, give me a concise summary of:
+
+1. What was created
+2. Project structure
+3. Database/storage approach
+4. How to run it
+5. What is working
+6. What remains for Phase 1
+7. Any issues or limitations
+8. Exact next recommended development step
+
+Do not claim a feature is complete unless it has actually been implemented and tested.
