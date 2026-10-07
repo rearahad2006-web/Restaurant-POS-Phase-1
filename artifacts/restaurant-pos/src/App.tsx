@@ -90,7 +90,94 @@ function Dialog({ title, onClose, children, wide = false }: { title: string; onC
   return <div className="overlay" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="dialog" style={wide ? { width: 'min(720px, 100%)' } : undefined} role="dialog" aria-modal="true" aria-label={title}><div className="dialog-head"><h2 className="dialog-title">{title}</h2><button className="close-btn" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div><div className="dialog-content">{children}</div></section></div>;
 }
 function Receipt({ order, data }: { order: Order; data: AppData }) {
-  return <div className="receipt" data-testid={`receipt-${order.id}`}><div className="receipt-center"><h2>{data.settings.name}</h2><div className="receipt-sub">{data.settings.address}<br />{data.settings.phone}</div><div>{order.status === 'cancelled' ? 'CANCELLED · ' : ''}{order.orderNumber}</div><div>{new Date(order.createdAt).toLocaleString()}</div></div><div className="receipt-rule" /><div>{order.type}{order.tableNameSnapshot ? ` · ${order.tableNameSnapshot}` : ''}</div>{order.customerName && <div>{order.customerName} · {order.customerPhone}</div>}{order.deliveryAddress && <div>{order.deliveryAddress}</div>}<div className="receipt-rule" />{order.items.map((item, index) => <div key={`${item.menuItemId}-${index}`}><div className="receipt-line"><span>{item.quantity} × {item.name}</span><span>{money(item.lineTotal, currency(data))}</span></div>{item.note && <div className="receipt-sub">Note: {item.note}</div>}</div>)}<div className="receipt-rule" /><div className="receipt-line"><span>Subtotal</span><span>{money(order.subtotal, currency(data))}</span></div>{order.discount > 0 && <div className="receipt-line"><span>Discount</span><span>− {money(order.discount, currency(data))}</span></div>}{order.deliveryCharge > 0 && <div className="receipt-line"><span>Delivery</span><span>{money(order.deliveryCharge, currency(data))}</span></div>}<div className="receipt-line receipt-total"><span>TOTAL</span><span>{money(order.total, currency(data))}</span></div>{order.payment && <><div className="receipt-line"><span>Paid · {order.payment.method}</span><span>{money(order.payment.amount, currency(data))}</span></div>{order.payment.change ? <div className="receipt-line"><span>Change</span><span>{money(order.payment.change, currency(data))}</span></div> : null}</>}<div className="receipt-footer">Served with care · {order.cashierName}<br />Thank you for sharing our table.</div></div>;
+  const cashPayment = order.payment?.method === 'Cash' ? order.payment : undefined;
+
+  return (
+    <div className="receipt" data-testid={`receipt-${order.id}`}>
+      <div className="receipt-center">
+        <h2>{data.settings.name}</h2>
+        <div className="receipt-sub">
+          {data.settings.address}
+          <br />
+          {data.settings.phone}
+        </div>
+        <div>
+          {order.status === 'cancelled' ? 'CANCELLED · ' : ''}
+          {order.orderNumber}
+        </div>
+        <div>{new Date(order.createdAt).toLocaleString()}</div>
+      </div>
+      <div className="receipt-rule" />
+      <div>
+        {order.type}
+        {order.tableNameSnapshot ? ` · ${order.tableNameSnapshot}` : ''}
+      </div>
+      {order.customerName && (
+        <div>
+          {order.customerName} · {order.customerPhone}
+        </div>
+      )}
+      {order.deliveryAddress && <div>{order.deliveryAddress}</div>}
+      <div className="receipt-rule" />
+      {order.items.map((item, index) => (
+        <div key={`${item.menuItemId}-${index}`}>
+          <div className="receipt-line">
+            <span>
+              {item.quantity} × {item.name}
+            </span>
+            <span>{money(item.lineTotal, currency(data))}</span>
+          </div>
+          {item.note && <div className="receipt-sub">Note: {item.note}</div>}
+        </div>
+      ))}
+      <div className="receipt-rule" />
+      <div className="receipt-line">
+        <span>Subtotal</span>
+        <span>{money(order.subtotal, currency(data))}</span>
+      </div>
+      {order.discount > 0 && (
+        <div className="receipt-line">
+          <span>Discount</span>
+          <span>− {money(order.discount, currency(data))}</span>
+        </div>
+      )}
+      {order.deliveryCharge > 0 && (
+        <div className="receipt-line">
+          <span>Delivery</span>
+          <span>{money(order.deliveryCharge, currency(data))}</span>
+        </div>
+      )}
+      <div className="receipt-line receipt-total">
+        <span>TOTAL</span>
+        <span>{money(order.total, currency(data))}</span>
+      </div>
+      {order.payment && (
+        <>
+          <div className="receipt-line">
+            <span>Paid · {order.payment.method}</span>
+            <span>{money(order.payment.amount, currency(data))}</span>
+          </div>
+          {cashPayment?.amountReceived !== undefined && (
+            <div className="receipt-line">
+              <span>Cash received</span>
+              <span>{money(cashPayment.amountReceived, currency(data))}</span>
+            </div>
+          )}
+          {cashPayment?.change !== undefined && (
+            <div className="receipt-line">
+              <span>Change</span>
+              <span>{money(cashPayment.change, currency(data))}</span>
+            </div>
+          )}
+        </>
+      )}
+      <div className="receipt-footer">
+        Served with care · {order.cashierName}
+        <br />
+        Thank you for sharing our table.
+      </div>
+    </div>
+  );
 }
 
 function TablesPage() {
