@@ -32,20 +32,21 @@ pnpm --filter @workspace/restaurant-pos run typecheck
 
 ## Development sign-in
 
+- Manager: `manager` / `2468`
 - Username: `cashier`
 - PIN: `1234`
 
-This is a visible sample cashier account for development only, not secure production authentication.
+Both visible sample accounts are development-only. Local PIN sign-in is not secure production authentication. Managers can configure local accounts and restaurant settings; Cashiers are limited to POS, Orders, and Payments.
 
 ## Storage and portability
 
 The POS persists its data in this browser's local storage through a `RestaurantRepository` boundary. It does not use the workspace API server, PostgreSQL, Replit authentication, or cloud APIs. Data is local to the current browser profile: it is not shared across devices or automatically backed up, and clearing browser data may remove it.
 
-The repository boundary is the replacement point for SQLite in a future Windows installation. The Replit preview is not itself an offline Windows app; a local app shell and local database still need to be implemented before the restaurant can rely on it without internet access.
+The repository boundary keeps storage isolated in the browser-local adapter. This build does not provide cloud sync or external services.
 
 ## Receipts
 
-Receipt data and print behavior are isolated in `src/services/printing.ts`. The current Print/Reprint action uses the browser print dialog. It does not connect to a 58mm/80mm thermal printer or a Windows printer driver.
+Receipt data and print behavior are isolated in `src/services/printing.ts`. Print/Reprint opens the browser print dialog only; no physical printer connection is provided.
 
 ## Project structure
 
@@ -54,11 +55,8 @@ Receipt data and print behavior are isolated in `src/services/printing.ts`. The 
 - `src/storage/repository.ts` — sample data and local persistence adapter
 - `src/services/printing.ts` — receipt preview/print boundary
 - `src/index.css` — shared application styling
+- `src/storage/repository.ts` — browser-local persistence and legacy payment migration
 
 ## Phase 1 scope limits
 
-This build does not include inventory, kitchen display, KOT, reservations, online ordering, cloud sync, multi-restaurant support, or subscriptions. The included restaurant and menu are sample data, not the restaurant's actual configuration.
-
-## Next development step
-
-Run the seven acceptance workflows from the project brief end-to-end and resolve any issues. After Phase 1 sign-off, replace browser storage with local SQLite and package a Windows app; then connect and test the physical receipt printer.
+The register intentionally excludes inventory, kitchen display/KOT, reservations, online ordering, cloud sync, multi-restaurant support, subscriptions, local database engines, desktop packaging, and physical printer integrations. Restaurant, menu, and account details are sample data and should be reviewed before operational use.

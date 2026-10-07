@@ -1,0 +1,271 @@
+The Phase 1 POS acceptance tests have passed.
+
+Before moving to SQLite/local Windows packaging, expand the existing application with a proper Manager Panel and complete payment records.
+
+IMPORTANT:
+Do not rebuild the existing POS.
+Do not break the existing seven accepted workflows.
+Extend the current application cleanly.
+
+## 1. Manager Panel
+
+Create a central Manager Panel where the restaurant manager can perform the major management tasks.
+
+The Manager Panel should contain:
+
+### Dashboard
+Show:
+- Today's total sales
+- Today's order count
+- Open tables
+- Completed orders
+- Cancelled orders
+- Cash sales
+- Card sales
+- Easypaisa sales
+- JazzCash sales
+- Other payment sales
+- Recent orders
+- Quick actions
+
+### POS
+Manager should be able to access the existing POS.
+
+Keep the existing:
+- Dine-in
+- Takeaway
+- Delivery
+- Tables
+- Menu
+- Cart
+- Checkout
+- Payment
+- Receipt
+
+### Orders
+Create a complete Orders management page.
+
+Show:
+- Order number
+- Date/time
+- Order type
+- Table
+- Customer information when applicable
+- Items
+- Total
+- Payment method
+- Payment status
+- Order status
+
+Allow:
+- View order
+- View receipt
+- Print/reprint receipt
+- Search
+- Filter by order type
+- Filter by payment method
+- Filter by date
+
+Do not allow completed orders to be silently modified.
+
+### Payments
+
+Create a dedicated Payments page.
+
+Every completed payment must be stored as a payment record.
+
+Payment record should include:
+- Payment ID
+- Order ID
+- Date/time
+- Amount
+- Payment method
+- Payment status
+- Cash received when applicable
+- Change when applicable
+- Optional transaction/reference number
+
+Payment methods:
+- Cash
+- Card
+- Easypaisa
+- JazzCash
+- Other
+
+Display:
+- Total sales
+- Cash total
+- Card total
+- Easypaisa total
+- JazzCash total
+- Other total
+
+Allow filtering by:
+- Date
+- Payment method
+- Order type
+
+### Menu Management
+
+Manager can:
+- Add category
+- Edit category
+- Delete category
+- Add menu item
+- Edit menu item
+- Delete menu item
+- Change price
+- Enable/disable item
+- Set description
+- Set image
+
+Preserve historical order prices.
+
+### Table Management
+
+Manager can:
+- Add table
+- Edit table
+- Delete table
+- View table status
+
+Do not hard-code the number of tables.
+
+### Reports
+
+Create basic reports:
+
+- Today's sales
+- Daily sales
+- Weekly sales
+- Monthly sales
+- Sales by payment method
+- Sales by order type
+- Best-selling menu items
+- Number of completed orders
+- Number of cancelled orders
+
+Keep reports simple and accurate.
+
+### Staff
+
+Create a basic staff management area.
+
+Roles:
+- Manager
+- Cashier
+
+Manager:
+- Full access
+
+Cashier:
+- POS
+- Orders
+- Payments needed for checkout
+
+Do not implement complex employee management yet.
+
+### Settings
+
+Create basic restaurant settings:
+- Restaurant name
+- Address
+- Phone
+- Currency
+- Receipt footer
+- Receipt settings
+
+Printer settings can be prepared but physical printer integration will happen later.
+
+## 2. Navigation
+
+Create a clear Manager Panel sidebar:
+
+Dashboard
+POS
+Orders
+Payments
+Menu
+Tables
+Reports
+Staff
+Settings
+
+Use a professional desktop POS layout.
+
+## 3. Payment and Billing Requirements
+
+IMPORTANT:
+
+The customer's receipt and the internal payment record are two separate things.
+
+When an order is paid:
+
+1. Save the completed order.
+2. Save the payment record.
+3. Save the payment method.
+4. Save cash received and change if applicable.
+5. Generate receipt data.
+6. Show receipt.
+7. Allow printing/reprinting.
+
+Do not lose payment information after the receipt is closed.
+
+## 4. Manager Dashboard Totals
+
+The dashboard totals must come from actual saved orders/payments.
+
+Do not use fake hard-coded statistics.
+
+Example:
+
+If:
+Cash = PKR 1,010
+Card = PKR 850
+Easypaisa = PKR 610
+JazzCash = PKR 1,400
+
+Then:
+
+Total sales = PKR 3,870.
+
+## 5. Important Rules
+
+- Do not break existing Phase 1 functionality.
+- Do not add inventory.
+- Do not add kitchen/KOT.
+- Do not add reservations.
+- Do not add SaaS.
+- Do not add cloud synchronization.
+- Do not add physical printer integration yet.
+- Do not move to SQLite yet.
+
+First implement and verify the Manager Panel and payment records.
+
+## 6. Testing
+
+After implementation, verify:
+
+1. Create a Dine-in order and pay cash.
+2. Verify payment appears in Payments.
+3. Verify dashboard cash total increases.
+4. Create a Takeaway order and pay Card.
+5. Verify Card total.
+6. Create a Delivery order and pay Easypaisa.
+7. Verify Delivery and Easypaisa information.
+8. Open Orders and view all three.
+9. Open each receipt.
+10. Verify old order prices remain unchanged.
+11. Add/edit a menu item.
+12. Add/edit a table.
+13. Verify Manager Panel navigation works.
+14. Run TypeScript checking.
+15. Run production build.
+
+At the end, report:
+- What was implemented
+- What was tested
+- Any bugs
+- Any remaining limitations
+
+Do not claim anything passed unless it was actually tested.

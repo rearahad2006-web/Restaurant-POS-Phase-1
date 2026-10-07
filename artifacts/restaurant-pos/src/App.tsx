@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, createContext, useContext, type ReactNode, type FormEvent } from 'react';
 import { Route, Switch, Link, useLocation } from 'wouter';
-import { LayoutDashboard, ShoppingCart, UtensilsCrossed, Armchair, ClipboardList, Search, Plus, Minus, Trash2, Pencil, Printer, LogOut, Banknote, CircleDollarSign, Clock3, Check, X, ChevronRight, CircleHelp, ReceiptText, WifiOff, PackagePlus, Users, Salad, CreditCard, MapPin, Phone, FileText, AlertCircle, ArrowUpRight } from 'lucide-react';
-import { AppData, Category, MenuItem, Order, OrderItem, OrderType, PaymentMethod, Table, money, makeId, now } from './domain';
+import { LayoutDashboard, ShoppingCart, UtensilsCrossed, Armchair, ClipboardList, Search, Plus, Minus, Trash2, Pencil, Printer, LogOut, Banknote, CircleDollarSign, Clock3, Check, X, ChevronRight, CircleHelp, ReceiptText, WifiOff, PackagePlus, Users, Salad, CreditCard, MapPin, Phone, FileText, AlertCircle, ArrowUpRight, BarChart3, Settings, UserRound, CalendarDays } from 'lucide-react';
+import { AppData, Category, MenuItem, Order, OrderItem, OrderType, PaymentMethod, Payment, Table, UserRole, money, makeId, now } from './domain';
 import { repository } from './storage/repository';
 import { printReceipt } from './services/printing';
 
@@ -24,7 +24,7 @@ function App() {
   const toast = (message: string) => { setToastText(message); window.setTimeout(() => setToastText(''), 2600); };
   if (!data) return <div className="login-screen"><div className="login-art"><div className="login-brand"><div className="brand-mark">J</div><div><div className="brand-name">Juniper & Hearth</div><div className="brand-sub">Local service desk</div></div></div><div className="login-hero"><h1>Service, in good hands.</h1><p>Starting your local register and preparing today's menu.</p></div><span className="login-food-note">A neighborhood table since 2019</span></div><div className="login-form-side"><div className="panel" style={{ padding: 24, width: 320 }}><div className="stat-label">OPENING REGISTER</div><div className="stat-value">Ready shortly</div><div style={{ height: 8, borderRadius: 20, background: 'hsl(var(--secondary))' }} /></div></div></div>;
   return <StoreContext.Provider value={{ data, setData, user, setUser, draftTableId, setDraftTableId, toast }}>
-    <Switch><Route path="/login" component={LoginPage} /><Route><ProtectedShell><Switch><Route path="/" component={DashboardPage} /><Route path="/dashboard" component={DashboardPage} /><Route path="/pos" component={PosPage} /><Route path="/tables" component={TablesPage} /><Route path="/menu" component={MenuPage} /><Route path="/orders" component={OrdersPage} /><Route component={NotFoundPage} /></Switch></ProtectedShell></Route></Switch>
+     <Switch><Route path="/login" component={LoginPage} /><Route><ProtectedShell><Switch><Route path="/" component={DashboardPage} /><Route path="/dashboard" component={DashboardPage} /><Route path="/pos" component={PosPage} /><Route path="/tables" component={TablesPage} /><Route path="/menu" component={MenuPage} /><Route path="/orders" component={OrdersPage} /><Route path="/payments" component={PaymentsPage} /><Route path="/reports" component={ReportsPage} /><Route path="/staff" component={StaffPage} /><Route path="/settings" component={SettingsPage} /><Route component={NotFoundPage} /></Switch></ProtectedShell></Route></Switch>
     {toastText && <div className="notice" role="status" data-testid="status-notice">{toastText}</div>}
   </StoreContext.Provider>;
 }
@@ -33,15 +33,25 @@ function ProtectedShell({ children }: { children: ReactNode }) {
   const { user, setUser, data } = useStore();
   const [location, setLocation] = useLocation();
   useEffect(() => { if (!user && location !== '/login') setLocation('/login'); }, [user, location, setLocation]);
+  useEffect(() => { if (user?.role !== 'Manager' && !['/pos', '/orders', '/payments'].includes(location)) setLocation('/pos'); }, [user, location, setLocation]);
   if (!user) return <LoginPage />;
-  const links = [
-    { href: '/dashboard', label: 'Overview', icon: LayoutDashboard },
-    { href: '/pos', label: 'New order', icon: ShoppingCart },
+  if (user.role !== 'Manager' && !['/pos', '/orders', '/payments'].includes(location)) return <div className="page"><PageHeader eyebrow="ACCESS RESTRICTED" title="Manager access required." subtitle="Cashier accounts can use the point of sale, order history and payment ledger." /><Link className="btn btn-primary" href="/pos">Return to the register</Link></div>;
+  const links = (user.role === 'Manager' ? [
+    { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { href: '/pos', label: 'POS', icon: ShoppingCart },
+    { href: '/orders', label: 'Orders', icon: ClipboardList },
+    { href: '/payments', label: 'Payments', icon: Banknote },
+    { href: '/menu', label: 'Menu', icon: UtensilsCrossed },
     { href: '/tables', label: 'Tables', icon: Armchair },
-    { href: '/menu', label: 'Menu setup', icon: UtensilsCrossed },
-    { href: '/orders', label: 'Order history', icon: ClipboardList },
-  ];
-  return <div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark">J</div><div><div className="brand-name">{data.settings.name}</div><div className="brand-sub">Local service desk</div></div></div><div className="nav-label">Restaurant</div><nav>{links.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={`nav-link ${location === href || (href === '/dashboard' && location === '/') ? 'active' : ''}`} data-testid={`link-${label.toLowerCase().replaceAll(' ', '-')}`}><Icon className="nav-icon" /><span>{label}</span></Link>)}</nav><div className="sidebar-spacer" /><div className="local-note"><b><i className="local-dot" />Stored on this device</b>Core register data is kept in this browser. No cloud connection is needed.</div><div className="sidebar-user"><div className="avatar">{user.name.split(' ').map(part => part[0]).join('').slice(0, 2)}</div><div className="user-copy"><div className="user-name">{user.name}</div><div className="user-role">{user.role} · local</div></div><button className="btn btn-quiet btn-sm" aria-label="Sign out" title="Sign out" onClick={() => { setUser(null); localStorage.removeItem('juniper-pos.user'); setLocation('/login'); }} data-testid="button-sign-out"><LogOut size={15} /></button></div></aside><main className="main-area"><header className="topbar"><div className="topbar-date">{new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date())}</div><div className="topbar-right"><span className="offline-pill"><i />LOCAL · READY</span></div></header>{children}</main></div>;
+    { href: '/reports', label: 'Reports', icon: BarChart3 },
+    { href: '/staff', label: 'Staff', icon: Users },
+    { href: '/settings', label: 'Settings', icon: Settings },
+  ] : [
+    { href: '/pos', label: 'POS', icon: ShoppingCart },
+    { href: '/orders', label: 'Orders', icon: ClipboardList },
+    { href: '/payments', label: 'Payments', icon: Banknote },
+  ]);
+  return <div className={`app-shell ${data.settings.compactDisplay ? 'compact-display' : ''}`}><aside className="sidebar"><div className="brand"><div className="brand-mark">J</div><div><div className="brand-name">{data.settings.name}</div><div className="brand-sub">Local service desk</div></div></div><div className="nav-label">Restaurant</div><nav>{links.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={`nav-link ${location === href || (href === '/dashboard' && location === '/') ? 'active' : ''}`} data-testid={`link-${label.toLowerCase().replaceAll(' ', '-')}`}><Icon className="nav-icon" /><span>{label}</span></Link>)}</nav><div className="sidebar-spacer" /><div className="local-note"><b><i className="local-dot" />Stored on this device</b>Core register data is kept in this browser. No cloud connection is needed.</div><div className="sidebar-user"><div className="avatar">{user.name.split(' ').map(part => part[0]).join('').slice(0, 2)}</div><div className="user-copy"><div className="user-name">{user.name}</div><div className="user-role">{user.role} · local</div></div><button className="btn btn-quiet btn-sm" aria-label="Sign out" title="Sign out" onClick={() => { setUser(null); localStorage.removeItem('juniper-pos.user'); setLocation('/login'); }} data-testid="button-sign-out"><LogOut size={15} /></button></div></aside><main className="main-area"><header className="topbar"><div className="topbar-date">{new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date())}</div><div className="topbar-right"><span className="offline-pill"><i />LOCAL · READY</span></div></header>{children}</main></div>;
 }
 
 function PageHeader({ eyebrow, title, subtitle, action }: { eyebrow: string; title: string; subtitle?: string; action?: ReactNode }) {
@@ -53,8 +63,8 @@ function LoginPage() {
   const [username, setUsername] = useState('cashier');
   const [password, setPassword] = useState('1234');
   const [error, setError] = useState('');
-  const submit = (event: FormEvent) => { event.preventDefault(); const found = data.users.find(candidate => candidate.username.toLowerCase() === username.trim().toLowerCase() && candidate.password === password); if (!found) { setError('That username or PIN does not match the local cashier account.'); return; } setUser(found); localStorage.setItem('juniper-pos.user', JSON.stringify(found)); toast(`Welcome, ${found.name.split(' ')[0]}`); setLocation('/dashboard'); };
-  return <div className="login-screen"><section className="login-art"><div className="login-brand"><div className="brand-mark">J</div><div><div className="brand-name">{data.settings.name}</div><div className="brand-sub">Neighborhood kitchen · Lahore</div></div></div><div className="login-hero"><div className="eyebrow" style={{ color: '#e8a17f' }}>A SMALL PLACE, A GOOD TABLE</div><h1>Service, in good hands.</h1><p>A dependable local register for the rhythm of a family-run kitchen. Take orders, settle the bill, keep the line moving.</p></div><span className="login-food-note">Good food. Familiar faces. Every day.</span></section><section className="login-form-side"><form className="login-form" onSubmit={submit}><div className="eyebrow">STAFF SIGN-IN</div><h2>Welcome back.</h2><p>Sign in to open the register on this device.</p><div className="field"><label htmlFor="username">Cashier username</label><input id="username" className="input" autoComplete="username" value={username} onChange={event => { setUsername(event.target.value); setError(''); }} data-testid="input-username" required /></div><div className="field"><label htmlFor="pin">PIN</label><input id="pin" className="input" type="password" inputMode="numeric" autoComplete="current-password" value={password} onChange={event => { setPassword(event.target.value); setError(''); }} data-testid="input-pin" required /></div>{error && <div className="validation" role="alert">{error}</div>}<button className="btn btn-primary login-submit" type="submit" data-testid="button-sign-in">Open register <ChevronRight size={15} /></button><div className="dev-creds"><b>Development cashier credentials</b><br />Username <b>cashier</b> · PIN <b>1234</b><br />Change these from local staff settings in a future phase.</div><p style={{ marginTop: 20, fontSize: 10, lineHeight: 1.6 }}>Replit development stores data in this browser's local storage. SQLite/native Windows packaging and physical printer support are future adapter work.</p></form></section></div>;
+  const submit = (event: FormEvent) => { event.preventDefault(); const found = data.users.find(candidate => candidate.username.toLowerCase() === username.trim().toLowerCase() && candidate.password === password); if (!found) { setError('That username or PIN does not match a local account.'); return; } setUser(found); localStorage.setItem('juniper-pos.user', JSON.stringify(found)); toast(`Welcome, ${found.name.split(' ')[0]}`); setLocation(found.role === 'Manager' ? '/dashboard' : '/pos'); };
+  return <div className="login-screen"><section className="login-art"><div className="login-brand"><div className="brand-mark">J</div><div><div className="brand-name">{data.settings.name}</div><div className="brand-sub">Neighborhood kitchen · Lahore</div></div></div><div className="login-hero"><div className="eyebrow" style={{ color: '#e8a17f' }}>A SMALL PLACE, A GOOD TABLE</div><h1>Service, in good hands.</h1><p>A dependable local register for the rhythm of a family-run kitchen. Take orders, settle the bill, keep the line moving.</p></div><span className="login-food-note">Good food. Familiar faces. Every day.</span></section><section className="login-form-side"><form className="login-form" onSubmit={submit}><div className="eyebrow">STAFF SIGN-IN</div><h2>Welcome back.</h2><p>Sign in to open the register on this device.</p><div className="field"><label htmlFor="username">Username</label><input id="username" className="input" autoComplete="username" value={username} onChange={event => { setUsername(event.target.value); setError(''); }} data-testid="input-username" required /></div><div className="field"><label htmlFor="pin">PIN</label><input id="pin" className="input" type="password" inputMode="numeric" autoComplete="current-password" value={password} onChange={event => { setPassword(event.target.value); setError(''); }} data-testid="input-pin" required /></div>{error && <div className="validation" role="alert">{error}</div>}<button className="btn btn-primary login-submit" type="submit" data-testid="button-sign-in">Open register <ChevronRight size={15} /></button><div className="dev-creds"><b>Development-only accounts</b><br />Manager <b>manager</b> · PIN <b>2468</b><br />Cashier <b>cashier</b> · PIN <b>1234</b></div><p style={{ marginTop: 20, fontSize: 10, lineHeight: 1.6 }}>Register data is saved in this browser. Receipt printing uses the browser print dialog.</p></form></section></div>;
 }
 
 function DashboardPage() {
@@ -62,27 +72,30 @@ function DashboardPage() {
   const today = new Date().toDateString();
   const todayOrders = data.orders.filter(order => new Date(order.createdAt).toDateString() === today);
   const paid = todayOrders.filter(order => order.status === 'paid');
-  const sales = paid.reduce((sum, order) => sum + order.total, 0);
+  const paymentsToday = data.payments.filter(payment => new Date(payment.dateTime).toDateString() === today && payment.status === 'paid' && data.orders.find(order => order.id === payment.orderId)?.status === 'paid');
+  const sales = paymentsToday.reduce((sum, payment) => sum + payment.amount, 0);
   const max = Math.max(1, ...Array.from({ length: 7 }, (_, i) => {
     const day = new Date(); day.setDate(day.getDate() - (6 - i));
-    return data.orders.filter(order => order.status === 'paid' && new Date(order.createdAt).toDateString() === day.toDateString()).reduce((sum, order) => sum + order.total, 0);
+    return data.payments.filter(payment => payment.status === 'paid' && new Date(payment.dateTime).toDateString() === day.toDateString() && data.orders.find(order => order.id === payment.orderId)?.status === 'paid').reduce((sum, payment) => sum + payment.amount, 0);
   }));
   const values = Array.from({ length: 7 }, (_, i) => {
     const day = new Date(); day.setDate(day.getDate() - (6 - i));
-    const amount = data.orders.filter(order => order.status === 'paid' && new Date(order.createdAt).toDateString() === day.toDateString()).reduce((sum, order) => sum + order.total, 0);
+    const amount = data.payments.filter(payment => payment.status === 'paid' && new Date(payment.dateTime).toDateString() === day.toDateString() && data.orders.find(order => order.id === payment.orderId)?.status === 'paid').reduce((sum, payment) => sum + payment.amount, 0);
     return { label: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(day), amount, height: Math.max(5, amount / max * 100), today: i === 6 };
   });
   const { settings } = data;
   return <div className="page"><PageHeader eyebrow="SERVICE OVERVIEW" title="Good afternoon." subtitle={`${settings.name} · ${settings.address}`} action={<Link href="/pos" className="btn btn-primary" data-testid="button-new-order"><Plus size={15} /> Start an order</Link>} />
-    <div className="stat-grid">
+    <div className="stat-grid dashboard-stat-grid">
       <Stat label="Sales today" value={money(sales, currency(data))} foot={`${paid.length} completed ${paid.length === 1 ? 'order' : 'orders'}`} icon={<CircleDollarSign />} />
-      <Stat label="Orders today" value={String(paid.length)} foot={todayOrders.filter(order => order.type === 'Delivery').length + ' delivery orders'} icon={<ReceiptText />} />
-      <Stat label="Open tables" value={String(data.tables.length)} foot="Set and ready for service" icon={<Armchair />} />
-      <Stat label="Completed orders" value={String(data.orders.filter(order => order.status === 'paid').length)} foot="All-time order history" icon={<Check />} />
+      <Stat label="Orders today" value={String(todayOrders.length)} foot={`${todayOrders.filter(order => order.status === 'cancelled').length} cancelled`} icon={<ReceiptText />} />
+      <Stat label="Open tables" value={String(data.tables.length)} foot="Available for dine-in" icon={<Armchair />} />
+      <Stat label="Completed orders" value={String(data.orders.filter(order => order.status === 'paid').length)} foot="All-time paid orders" icon={<Check />} />
+      <Stat label="Cancelled orders" value={String(data.orders.filter(order => order.status === 'cancelled').length)} foot="All-time cancelled orders" icon={<X />} />
     </div>
     <div className="dash-grid"><section className="panel"><div className="panel-head"><div><div className="eyebrow">LAST SEVEN DAYS</div><h2 className="panel-title">Sales at a glance</h2></div><span className="badge badge-green">Local records</span></div><div className="chart-area">{values.map((item, index) => <div className="bar-wrap" key={item.label + index} title={`${item.label}: ${money(item.amount, currency(data))}`}><div className={`bar ${item.today ? 'today' : ''}`} style={{ height: `${item.height}%` }} /><span className="bar-label">{item.label}</span></div>)}</div></section>
       <section className="panel"><div className="panel-head"><div><div className="eyebrow">GET MOVING</div><h2 className="panel-title">Quick actions</h2></div><ArrowUpRight size={16} color="hsl(var(--muted-foreground))" /></div><div className="quick-grid"><Link href="/pos" className="btn quick-action" data-testid="quick-action-order"><ShoppingCart /><span>New order</span></Link><Link href="/tables" className="btn quick-action" data-testid="quick-action-tables"><Armchair /><span>Manage tables</span></Link><Link href="/menu" className="btn quick-action" data-testid="quick-action-menu"><Salad /><span>Update menu</span></Link><Link href="/orders" className="btn quick-action" data-testid="quick-action-orders"><ClipboardList /><span>Find an order</span></Link></div></section></div>
-    <section className="panel" style={{ marginTop: 16 }}><div className="panel-head"><div><div className="eyebrow">THE LAST FEW BILLS</div><h2 className="panel-title">Recent orders</h2></div><Link href="/orders" className="btn btn-sm">View all <ChevronRight size={13} /></Link></div><OrdersTable rows={[...data.orders].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5)} data={data} /></section>
+     <section className="panel" style={{ marginTop: 16 }}><div className="panel-head"><div><div className="eyebrow">PAYMENT MIX · TODAY</div><h2 className="panel-title">Sales by method</h2></div><Link href="/payments" className="btn btn-sm">Payment ledger <ChevronRight size={13} /></Link></div><div className="method-strip">{(['Cash','Card','Easypaisa','JazzCash','Other'] as PaymentMethod[]).map(method => { const amount = paymentsToday.filter(payment => payment.method === method).reduce((sum, payment) => sum + payment.amount, 0); return <div className="method-stat" key={method}><span>{method}</span><b>{money(amount, currency(data))}</b></div>; })}</div></section>
+     <section className="panel" style={{ marginTop: 16 }}><div className="panel-head"><div><div className="eyebrow">THE LAST FEW BILLS</div><h2 className="panel-title">Recent orders</h2></div><Link href="/orders" className="btn btn-sm">View all <ChevronRight size={13} /></Link></div><OrdersTable rows={[...data.orders].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5)} data={data} /></section>
   </div>;
 }
 
@@ -90,10 +103,11 @@ function Dialog({ title, onClose, children, wide = false }: { title: string; onC
   return <div className="overlay" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="dialog" style={wide ? { width: 'min(720px, 100%)' } : undefined} role="dialog" aria-modal="true" aria-label={title}><div className="dialog-head"><h2 className="dialog-title">{title}</h2><button className="close-btn" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div><div className="dialog-content">{children}</div></section></div>;
 }
 function Receipt({ order, data }: { order: Order; data: AppData }) {
-  const cashPayment = order.payment?.method === 'Cash' ? order.payment : undefined;
+  const payment = data.payments.find(entry => entry.orderId === order.id) || order.payment;
+  const cashPayment = payment?.method === 'Cash' ? payment : undefined;
 
   return (
-    <div className="receipt" data-testid={`receipt-${order.id}`}>
+    <div className={`receipt ${data.settings.printWidth || 'narrow'}`} data-testid={`receipt-${order.id}`}>
       <div className="receipt-center">
         <h2>{data.settings.name}</h2>
         <div className="receipt-sub">
@@ -102,7 +116,7 @@ function Receipt({ order, data }: { order: Order; data: AppData }) {
           {data.settings.phone}
         </div>
         <div>
-          {order.status === 'cancelled' ? 'CANCELLED · ' : ''}
+      {order.status === 'cancelled' ? 'CANCELLED · ' : ''}
           {order.orderNumber}
         </div>
         <div>{new Date(order.createdAt).toLocaleString()}</div>
@@ -151,11 +165,11 @@ function Receipt({ order, data }: { order: Order; data: AppData }) {
         <span>TOTAL</span>
         <span>{money(order.total, currency(data))}</span>
       </div>
-      {order.payment && (
+      {payment && (
         <>
           <div className="receipt-line">
-            <span>Paid · {order.payment.method}</span>
-            <span>{money(order.payment.amount, currency(data))}</span>
+            <span>Paid · {payment.method}</span>
+            <span>{money(payment.amount, currency(data))}</span>
           </div>
           {cashPayment?.amountReceived !== undefined && (
             <div className="receipt-line">
@@ -173,8 +187,7 @@ function Receipt({ order, data }: { order: Order; data: AppData }) {
       )}
       <div className="receipt-footer">
         Served with care · {order.cashierName}
-        <br />
-        Thank you for sharing our table.
+        {data.settings.receiptFooter && <><br />{data.settings.receiptFooter}</>}
       </div>
     </div>
   );
@@ -237,30 +250,31 @@ function OrdersPage() {
   const { data, setData, toast } = useStore();
   const [query, setQuery] = useState('');
   const [type, setType] = useState('all');
+  const [method, setMethod] = useState('all');
   const [date, setDate] = useState('all');
   const [status, setStatus] = useState('all');
   const [selected, setSelected] = useState<Order | null>(null);
   const cutoff = (value: string) => { const base = new Date(); base.setHours(0, 0, 0, 0); if (value === 'today') return base.getTime(); if (value === '7days') { base.setDate(base.getDate() - 6); return base.getTime(); } return 0; };
   const rows = [...data.orders].filter(order => {
     const target = `${order.orderNumber} ${order.customerName || ''} ${order.customerPhone || ''} ${order.tableNameSnapshot || ''}`.toLowerCase();
-    return (!query || target.includes(query.toLowerCase())) && (type === 'all' || order.type === type) && (status === 'all' || order.status === status) && new Date(order.createdAt).getTime() >= cutoff(date);
+    const payment = data.payments.find(entry => entry.orderId === order.id);
+    return (!query || target.includes(query.toLowerCase())) && (type === 'all' || order.type === type) && (method === 'all' || payment?.method === method) && (status === 'all' || order.status === status) && new Date(order.createdAt).getTime() >= cutoff(date);
   }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const cancel = (order: Order) => {
     if (order.status === 'cancelled') return;
     if (!window.confirm(`Cancel ${order.orderNumber}? This keeps its receipt and payment history, but marks it cancelled.`)) return;
-    setData(current => ({ ...current, orders: current.orders.map(item => item.id === order.id ? { ...item, status: 'cancelled', updatedAt: now() } : item) }));
+    setData(current => ({ ...current, orders: current.orders.map(item => item.id === order.id ? { ...item, status: 'cancelled', updatedAt: now() } : item), payments: current.payments.map(payment => payment.orderId === order.id ? { ...payment, status: 'cancelled' } : payment) }));
     setSelected({ ...order, status: 'cancelled', updatedAt: now() });
     toast(`${order.orderNumber} marked cancelled.`);
   };
   return <div className="page"><PageHeader eyebrow="LOCAL ORDER BOOK" title="Order history." subtitle="Find a ticket, review what was served, or print another browser receipt." />
-    <div className="toolbar"><div className="search-wrap" style={{ flex: 1 }}><Search /><input className="input" value={query} onChange={event => setQuery(event.target.value)} placeholder="Ticket number, customer, phone or table" aria-label="Search orders" data-testid="input-orders-search" /></div><select className="select filter-select" value={type} onChange={event => setType(event.target.value)} aria-label="Filter order type" data-testid="filter-order-type"><option value="all">All types</option><option>Dine-in</option><option>Takeaway</option><option>Delivery</option></select><select className="select filter-select" value={date} onChange={event => setDate(event.target.value)} aria-label="Filter date" data-testid="filter-order-date"><option value="all">Any date</option><option value="today">Today</option><option value="7days">Last 7 days</option></select><select className="select filter-select" value={status} onChange={event => setStatus(event.target.value)} aria-label="Filter order status" data-testid="filter-order-status"><option value="all">Any status</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select></div>
+    <div className="toolbar"><div className="search-wrap" style={{ flex: 1 }}><Search /><input className="input" value={query} onChange={event => setQuery(event.target.value)} placeholder="Ticket number, customer, phone or table" aria-label="Search orders" data-testid="input-orders-search" /></div><select className="select filter-select" value={type} onChange={event => setType(event.target.value)} aria-label="Filter order type" data-testid="filter-order-type"><option value="all">All types</option><option>Dine-in</option><option>Takeaway</option><option>Delivery</option></select><select className="select filter-select" value={method} onChange={event => setMethod(event.target.value)} aria-label="Filter payment method"><option value="all">All payment methods</option>{(['Cash','Card','Easypaisa','JazzCash','Other'] as PaymentMethod[]).map(value => <option key={value}>{value}</option>)}</select><select className="select filter-select" value={date} onChange={event => setDate(event.target.value)} aria-label="Filter date" data-testid="filter-order-date"><option value="all">Any date</option><option value="today">Today</option><option value="7days">Last 7 days</option></select><select className="select filter-select" value={status} onChange={event => setStatus(event.target.value)} aria-label="Filter order status" data-testid="filter-order-status"><option value="all">Any status</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select></div>
     <section className="panel"><div className="panel-head"><div><div className="eyebrow">TICKETS SAVED HERE</div><h2 className="panel-title">Order book</h2></div><span className="badge">{rows.length} {rows.length === 1 ? 'ticket' : 'tickets'}</span></div>{rows.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Ticket</th><th>Date & time</th><th>Type</th><th>Customer / table</th><th>Payment</th><th>Total</th><th>Status</th><th /></tr></thead><tbody>{rows.map(order => <tr key={order.id} data-testid={`row-order-${order.id}`}><td><button className="btn btn-quiet btn-sm mono" onClick={() => setSelected(order)} data-testid={`button-view-order-${order.id}`}>{order.orderNumber}</button></td><td>{new Date(order.createdAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td><td>{order.type}</td><td>{order.tableNameSnapshot || order.customerName || 'Walk-in'}</td><td>{order.payment?.method || '—'}</td><td className="mono">{money(order.total, currency(data))}</td><td><span className={`badge ${order.status === 'paid' ? 'badge-green' : 'badge-orange'}`}>{order.status}</span></td><td><button className="btn btn-sm" onClick={() => setSelected(order)} data-testid={`button-details-${order.id}`}>Details</button></td></tr>)}</tbody></table></div> : <Empty title={query || type !== 'all' || date !== 'all' || status !== 'all' ? 'No tickets match these filters' : 'Your order book is empty'} description={query || type !== 'all' || date !== 'all' || status !== 'all' ? 'Clear a filter or try another search.' : 'Paid orders will appear here after checkout.'} icon={<ClipboardList size={20} />} action={query || type !== 'all' || date !== 'all' || status !== 'all' ? <button className="btn btn-sm" onClick={() => { setQuery(''); setType('all'); setDate('all'); setStatus('all'); }}>Clear filters</button> : undefined} />}</section>
-    <p className="page-subtitle" style={{ marginTop: 13, display: 'flex', gap: 7, alignItems: 'center' }}><Printer size={13} /> Print uses the browser's print dialog only; thermal-printer integration is future work.</p>
-    {selected && <Dialog title={`Ticket ${selected.orderNumber}`} onClose={() => setSelected(null)} wide><Receipt order={selected} data={data} /><div className="dialog-actions" style={{ paddingBottom: 0 }}><button className="btn" onClick={() => printReceipt()} data-testid="button-reprint-order"><Printer size={14} /> Print / reprint</button>{selected.status === 'paid' && <button className="btn btn-danger" onClick={() => cancel(selected)} data-testid="button-cancel-order"><X size={14} /> Cancel order</button>}<button className="btn btn-primary" onClick={() => setSelected(null)}>Done</button></div></Dialog>}
+    <p className="page-subtitle" style={{ marginTop: 13, display: 'flex', gap: 7, alignItems: 'center' }}><Printer size={13} /> Print uses the browser's print dialog only.</p>
+    {selected && <Dialog title={`Ticket ${selected.orderNumber}`} onClose={() => setSelected(null)} wide><div className="order-detail-grid"><section><div className="detail-kicker">ORDER DETAILS</div><p><b>Order status</b><br /><span className={`badge ${selected.status === 'paid' ? 'badge-green' : 'badge-orange'}`}>{selected.status}</span></p><p><b>Order type</b><br />{selected.type}</p><p><b>Customer / table</b><br />{selected.tableNameSnapshot || selected.customerName || 'Walk-in'}{selected.customerPhone ? ` · ${selected.customerPhone}` : ''}</p>{selected.deliveryAddress && <p><b>Delivery address</b><br />{selected.deliveryAddress}</p>}<p><b>Cashier</b><br />{selected.cashierName}</p><p><b>Payment</b><br />{data.payments.find(payment => payment.orderId === selected.id)?.method || selected.payment?.method || '—'} · {data.payments.find(payment => payment.orderId === selected.id)?.status || selected.status}</p></section><section><div className="detail-kicker">SAVED ITEM SNAPSHOTS</div><div className="table-wrap"><table className="data-table"><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Line total</th></tr></thead><tbody>{selected.items.map((item,index) => <tr key={`${item.menuItemId}-${index}`}><td>{item.name}{item.note && <small className="item-note-detail"> · {item.note}</small>}</td><td>{item.quantity}</td><td>{money(item.unitPrice,currency(data))}</td><td>{money(item.lineTotal,currency(data))}</td></tr>)}</tbody></table></div><div className="detail-totals"><span>Subtotal <b>{money(selected.subtotal,currency(data))}</b></span><span>Discount <b>− {money(selected.discount,currency(data))}</b></span><span>Delivery <b>{money(selected.deliveryCharge,currency(data))}</b></span><strong>Total <b>{money(selected.total,currency(data))}</b></strong></div></section></div><div className="receipt-detail"><Receipt order={selected} data={data} /></div><div className="dialog-actions" style={{ paddingBottom: 0 }}><button className="btn" onClick={() => printReceipt()} data-testid="button-reprint-order"><Printer size={14} /> Print / reprint</button>{selected.status === 'paid' && <button className="btn btn-danger" onClick={() => cancel(selected)} data-testid="button-cancel-order"><X size={14} /> Cancel order</button>}<button className="btn btn-primary" onClick={() => setSelected(null)}>Done</button></div></Dialog>}
   </div>;
 }
 
-export default App;
 function Stat({ label, value, foot, icon }: { label: string; value: string; foot: string; icon: ReactNode }) { return <div className="panel stat-card"><span className="stat-label">{label}</span><div className="stat-value" data-testid={`stat-${label.toLowerCase().replaceAll(' ', '-')}`}>{value}</div><div className="stat-foot">{foot}</div><div className="stat-icon">{icon}</div></div>; }
 function OrdersTable({ rows, data, onSelect }: { rows: Order[]; data: AppData; onSelect?: (order: Order) => void }) {
   if (!rows.length) return <Empty title="No orders yet" description="Completed tickets will settle here, ready to review or reprint." icon={<ReceiptText size={20} />} />;
@@ -268,6 +282,148 @@ function OrdersTable({ rows, data, onSelect }: { rows: Order[]; data: AppData; o
 }
 function Empty({ title, description, icon, action }: { title: string; description: string; icon: ReactNode; action?: ReactNode }) { return <div className="empty-state"><div className="empty-mark">{icon}</div><h3>{title}</h3><p>{description}</p>{action}</div>; }
 function NotFoundPage() { return <div className="page"><PageHeader eyebrow="NOT FOUND" title="This page isn't on the menu." subtitle="Choose a section from the left to get back to work." /><Link className="btn btn-primary" href="/dashboard">Back to overview</Link></div>; }
+
+function PaymentsPage() {
+  const { data } = useStore();
+  const [period, setPeriod] = useState('all');
+  const [method, setMethod] = useState('all');
+  const [type, setType] = useState('all');
+  const [query, setQuery] = useState('');
+  const methods: PaymentMethod[] = ['Cash', 'Card', 'Easypaisa', 'JazzCash', 'Other'];
+  const start = periodStart(period);
+  const rows = data.payments
+    .flatMap(payment => {
+      const order = data.orders.find(entry => entry.id === payment.orderId);
+      return order ? [{ payment, order }] : [];
+    })
+    .filter(({ payment, order }) =>
+      new Date(payment.dateTime).getTime() >= start &&
+      (method === 'all' || payment.method === method) &&
+      (type === 'all' || order.type === type) &&
+      (!query || `${payment.id} ${payment.orderId} ${order.orderNumber} ${order.customerName || ''} ${order.tableNameSnapshot || ''} ${payment.reference || ''}`.toLowerCase().includes(query.toLowerCase())),
+    )
+    .sort((a, b) => b.payment.dateTime.localeCompare(a.payment.dateTime));
+  const collected = rows.filter(({ payment, order }) => payment.status === 'paid' && order.status === 'paid');
+  const total = collected.reduce((sum, row) => sum + row.payment.amount, 0);
+  const totalFor = (paymentMethod: PaymentMethod) =>
+    collected.filter(row => row.payment.method === paymentMethod).reduce((sum, row) => sum + row.payment.amount, 0);
+
+  return (
+    <div className="page">
+      <PageHeader eyebrow="LOCAL PAYMENT LEDGER" title="Payments." subtitle="Durable payment records, independent of the receipt preview." />
+      <div className="stat-grid payment-stat-grid" data-testid="payment-total-cards">
+        <Stat label="Total sales" value={money(total, currency(data))} foot={`${collected.length} completed payments`} icon={<CircleDollarSign />} />
+        {methods.map(paymentMethod => (
+          <Stat key={paymentMethod} label={`${paymentMethod} total`} value={money(totalFor(paymentMethod), currency(data))} foot="Completed payments in selected filters" icon={<Banknote />} />
+        ))}
+      </div>
+      <div className="toolbar">
+        <div className="search-wrap" style={{ flex: 1 }}>
+          <Search />
+          <input className="input" value={query} onChange={event => setQuery(event.target.value)} placeholder="Payment ID, order, customer or reference" aria-label="Search payments" data-testid="search-payments" />
+        </div>
+        <select className="select filter-select" value={period} onChange={event => setPeriod(event.target.value)} aria-label="Filter payment date" data-testid="filter-payment-date">
+          <option value="all">All dates</option><option value="today">Today</option><option value="week">Last 7 days</option><option value="month">This month</option>
+        </select>
+        <select className="select filter-select" value={method} onChange={event => setMethod(event.target.value)} aria-label="Filter payment method" data-testid="filter-payment-method">
+          <option value="all">All methods</option>{methods.map(value => <option key={value}>{value}</option>)}
+        </select>
+        <select className="select filter-select" value={type} onChange={event => setType(event.target.value)} aria-label="Filter order type" data-testid="filter-payment-order-type">
+          <option value="all">All order types</option><option>Dine-in</option><option>Takeaway</option><option>Delivery</option>
+        </select>
+      </div>
+      <section className="panel">
+        <div className="panel-head">
+          <div><div className="eyebrow">SAVED PAYMENT RECORDS</div><h2 className="panel-title">Ledger</h2></div>
+          <span className="badge">{rows.length} records</span>
+        </div>
+        {rows.length ? (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Payment ID</th><th>Order ID / number</th><th>Date & time</th><th>Type</th><th>Customer / table</th><th>Method</th><th>Amount</th><th>Cash received</th><th>Change</th><th>Reference</th><th>Payment status</th><th>Order status</th></tr></thead>
+              <tbody>{rows.map(({ payment, order }) => (
+                <tr key={payment.id} data-testid={`row-payment-${payment.id}`}>
+                  <td className="mono">{payment.id}</td>
+                  <td><div className="mono">{order.id}</div><small>{order.orderNumber}</small></td>
+                  <td>{new Date(payment.dateTime).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
+                  <td>{order.type}</td>
+                  <td>{order.tableNameSnapshot || order.customerName || 'Walk-in'}</td>
+                  <td>{payment.method}</td>
+                  <td className="mono">{money(payment.amount, currency(data))}</td>
+                  <td className="mono">{payment.amountReceived === undefined ? '—' : money(payment.amountReceived, currency(data))}</td>
+                  <td className="mono">{payment.change === undefined ? '—' : money(payment.change, currency(data))}</td>
+                  <td>{payment.reference || '—'}</td>
+                  <td><span className={`badge ${payment.status === 'paid' ? 'badge-green' : 'badge-orange'}`}>{payment.status}</span></td>
+                  <td><span className={`badge ${order.status === 'paid' ? 'badge-green' : 'badge-orange'}`}>{order.status}</span></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        ) : <Empty title="No payment records found" description="Paid orders create one independent payment record at checkout." icon={<Banknote size={20} />} />}
+      </section>
+    </div>
+  );
+}
+
+function periodStart(period: string) {
+  const date = new Date(); date.setHours(0,0,0,0);
+  if (period === 'today') return date.getTime();
+  if (period === 'week') { date.setDate(date.getDate()-6); return date.getTime(); }
+  if (period === 'month') { date.setDate(1); return date.getTime(); }
+  return 0;
+}
+
+function ReportsPage() {
+  const { data } = useStore();
+  const [period,setPeriod] = useState('today');
+  const [reportDay,setReportDay] = useState(new Date().toISOString().slice(0,10));
+  const [method,setMethod] = useState('all');
+  const [type,setType] = useState('all');
+  const start = period === 'day' ? new Date(`${reportDay}T00:00:00`).getTime() : periodStart(period);
+  const end = period === 'day' ? start + 86400000 : period === 'today' ? new Date(new Date().setHours(24,0,0,0)).getTime() : Infinity;
+  const inRange = (value:string) => { const time = new Date(value).getTime(); return time >= start && time < end; };
+  const orders = data.orders.filter(order => inRange(order.createdAt) && (type === 'all' || order.type === type) && (method === 'all' || data.payments.some(payment => payment.orderId === order.id && payment.method === method)));
+  const completed = orders.filter(order => order.status === 'paid');
+  const cancelled = orders.filter(order => order.status === 'cancelled');
+  const paymentRows = data.payments.filter(payment => inRange(payment.dateTime) && (method === 'all' || payment.method === method)).filter(payment => {
+    const order = data.orders.find(item => item.id === payment.orderId);
+    return !!order && order.status === 'paid' && (type === 'all' || order.type === type);
+  });
+  const total = paymentRows.reduce((sum,payment)=>sum+payment.amount,0);
+  const salesByType = (orderType: OrderType) => paymentRows.reduce((sum,payment) => {
+    return sum + (data.orders.find(order => order.id === payment.orderId)?.type === orderType ? payment.amount : 0);
+  }, 0);
+  const products = new Map<string,{name:string;quantity:number;revenue:number}>();
+  completed.forEach(order=>order.items.forEach(item=>{const old=products.get(item.menuItemId) || {name:item.name,quantity:0,revenue:0}; old.quantity+=item.quantity;old.revenue+=item.lineTotal;products.set(item.menuItemId,old);}));
+  const best=[...products.values()].sort((a,b)=>b.quantity-a.quantity).slice(0,8);
+  return <div className="page"><PageHeader eyebrow="SERVICE PERFORMANCE" title="Reports." subtitle="A readout of saved orders and payments. Cancelled sales are excluded from collected revenue." />
+    <div className="toolbar"><select className="select filter-select" value={period} onChange={event=>setPeriod(event.target.value)} aria-label="Report period"><option value="today">Today</option><option value="day">Choose day</option><option value="week">This week</option><option value="month">This month</option></select>{period==='day'&&<input className="input filter-select" type="date" value={reportDay} onChange={event=>setReportDay(event.target.value)} aria-label="Select report day"/>}<select className="select filter-select" value={method} onChange={event=>setMethod(event.target.value)} aria-label="Report payment method"><option value="all">All payment methods</option>{(['Cash','Card','Easypaisa','JazzCash','Other'] as PaymentMethod[]).map(value=><option key={value}>{value}</option>)}</select><select className="select filter-select" value={type} onChange={event=>setType(event.target.value)} aria-label="Report order type"><option value="all">All order types</option><option>Dine-in</option><option>Takeaway</option><option>Delivery</option></select></div>
+    <div className="stat-grid"><Stat label="Net collected" value={money(total,currency(data))} foot={`${paymentRows.length} saved payments`} icon={<CircleDollarSign/>}/><Stat label="Completed" value={String(completed.length)} foot="Paid orders in period" icon={<Check/>}/><Stat label="Cancelled" value={String(cancelled.length)} foot="Cancelled orders in period" icon={<X/>}/><Stat label="Avg. completed" value={money(completed.length ? total/completed.length : 0,currency(data))} foot="Collected / completed tickets" icon={<BarChart3/>}/></div>
+    <div className="dash-grid"><section className="panel"><div className="panel-head"><div><div className="eyebrow">PAYMENT METHOD</div><h2 className="panel-title">Collected by method</h2></div></div><div className="report-breakdown">{(['Cash','Card','Easypaisa','JazzCash','Other'] as PaymentMethod[]).map(paymentMethod=>{const amount=paymentRows.filter(row=>row.method===paymentMethod).reduce((sum,row)=>sum+row.amount,0);return <div className="break-row" key={paymentMethod}><span>{paymentMethod}</span><b>{money(amount,currency(data))}</b></div>})}</div></section><section className="panel"><div className="panel-head"><div><div className="eyebrow">ORDER TYPE</div><h2 className="panel-title">Sales by order type</h2></div></div><div className="report-breakdown">{(['Dine-in','Takeaway','Delivery'] as OrderType[]).map(value=><div className="break-row" key={value}><span>{value}<small> · {completed.filter(order=>order.type===value).length} orders</small></span><b>{money(salesByType(value),currency(data))}</b></div>)}</div></section></div>
+    <section className="panel" style={{marginTop:16}}><div className="panel-head"><div><div className="eyebrow">ITEM SNAPSHOTS</div><h2 className="panel-title">Best-selling items</h2></div><span className="badge">{best.length} items</span></div>{best.length?<div className="table-wrap"><table className="data-table"><thead><tr><th>Rank</th><th>Item</th><th>Units sold</th><th>Item revenue</th></tr></thead><tbody>{best.map((item,index)=><tr key={`${item.name}-${index}`}><td className="mono">{String(index+1).padStart(2,'0')}</td><td>{item.name}</td><td>{item.quantity}</td><td className="mono">{money(item.revenue,currency(data))}</td></tr>)}</tbody></table></div>:<Empty title="No completed items in this period" description="Best sellers will appear after completed tickets are recorded." icon={<Salad size={20}/>} />}</section>
+  </div>;
+}
+
+function StaffPage() {
+  const {data,setData,toast}=useStore();
+  const [editing,setEditing]=useState<string|null>(null);
+  const [form,setForm]=useState({name:'',username:'',password:'',role:'Cashier' as UserRole});
+  const [error,setError]=useState('');
+  const open=(user?:AppData['users'][number])=>{setEditing(user?.id||'new');setForm({name:user?.name||'',username:user?.username||'',password:user?.password||'',role:user?.role||'Cashier'});setError('');};
+  const save=(event:FormEvent)=>{event.preventDefault();if(!form.name.trim()||!form.username.trim()||!form.password.trim()){setError('Name, username and PIN are required.');return;}if(data.users.some(user=>user.username.toLowerCase()===form.username.trim().toLowerCase()&&user.id!==editing)){setError('That username is already in use.');return;}setData(current=>({...current,users:editing==='new'?[...current.users,{id:makeId(),name:form.name.trim(),username:form.username.trim(),password:form.password,role:form.role,createdAt:now()}]:current.users.map(user=>user.id===editing?{...user,name:form.name.trim(),username:form.username.trim(),password:form.password,role:form.role}:user)}));toast('Staff account saved.');setEditing(null);};
+  const remove=(user:AppData['users'][number])=>{if(user.developmentOnly){toast('Development accounts are protected.');return;}if(data.users.filter(entry=>entry.role==='Manager').length===1&&user.role==='Manager'){toast('Keep at least one manager account.');return;}if(window.confirm(`Remove ${user.name}'s local account?`)){setData(current=>({...current,users:current.users.filter(entry=>entry.id!==user.id)}));toast('Account removed.');}};
+  return <div className="page"><PageHeader eyebrow="LOCAL ACCESS" title="Staff." subtitle="Local accounts for this register. Development accounts remain clearly marked." action={<button className="btn btn-primary" onClick={()=>open()}><Plus size={15}/> Add staff account</button>}/><section className="panel"><div className="panel-head"><div><div className="eyebrow">LOCAL ACCOUNTS</div><h2 className="panel-title">People on this register</h2></div><span className="badge">{data.users.length} accounts</span></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Account</th><th>Actions</th></tr></thead><tbody>{data.users.map(user=><tr key={user.id}><td><b>{user.name}</b></td><td className="mono">{user.username}</td><td><span className="badge">{user.role}</span></td><td>{user.developmentOnly?<span className="badge badge-orange">Development only</span>:'Local account'}</td><td><button className="btn btn-sm" onClick={()=>open(user)}><Pencil size={12}/> Edit</button> <button className="btn btn-sm btn-danger" disabled={!!user.developmentOnly} onClick={()=>remove(user)}><Trash2 size={12}/> Remove</button></td></tr>)}</tbody></table></div></section>{editing&&<Dialog title={editing==='new'?'Add staff account':'Edit staff account'} onClose={()=>setEditing(null)}><form onSubmit={save}><div className="form-grid"><div className="field span-2"><label>Name</label><input className="input" value={form.name} onChange={event=>setForm({...form,name:event.target.value})} required/></div><div className="field"><label>Username</label><input className="input" value={form.username} onChange={event=>setForm({...form,username:event.target.value})} required/></div><div className="field"><label>PIN / password</label><input className="input" value={form.password} onChange={event=>setForm({...form,password:event.target.value})} required/></div><div className="field span-2"><label>Role</label><select className="select" value={form.role} onChange={event=>setForm({...form,role:event.target.value as UserRole})}><option>Manager</option><option>Cashier</option></select></div></div>{error&&<p className="validation">{error}</p>}<div className="dialog-actions" style={{paddingRight:0,paddingBottom:0}}><button type="button" className="btn" onClick={()=>setEditing(null)}>Cancel</button><button className="btn btn-primary">Save account</button></div></form></Dialog>}</div>;
+}
+
+function SettingsPage() {
+  const {data,setData,toast}=useStore();
+  const [form,setForm]=useState(data.settings);
+  const [saved,setSaved]=useState(true);
+  useEffect(()=>{setForm(data.settings);setSaved(true);},[data.settings]);
+  const change=(key:keyof AppData['settings'],value:string|boolean)=>{setForm(current=>({...current,[key]:value}));setSaved(false);};
+  const submit=(event:FormEvent)=>{event.preventDefault();if(!form.name.trim()||!form.currency.trim()){toast('Restaurant name and currency are required.');return;}setData(current=>({...current,settings:{...current.settings,...form,name:form.name.trim(),currency:form.currency.trim().toUpperCase()}}));setSaved(true);toast('Restaurant settings saved.');};
+  return <div className="page"><PageHeader eyebrow="REGISTER PREFERENCES" title="Settings." subtitle="Restaurant identity and browser receipt presentation."/><form className="panel settings-form" onSubmit={submit}><div className="panel-head"><div><div className="eyebrow">RECEIPT IDENTITY</div><h2 className="panel-title">Restaurant details</h2></div><span className="badge badge-green">Saved on this device</span></div><div className="form-grid settings-grid"><div className="field span-2"><label htmlFor="settings-name">Restaurant name *</label><input id="settings-name" className="input" value={form.name} onChange={event=>change('name',event.target.value)} required/></div><div className="field span-2"><label htmlFor="settings-address">Address</label><input id="settings-address" className="input" value={form.address} onChange={event=>change('address',event.target.value)}/></div><div className="field"><label htmlFor="settings-phone">Phone</label><input id="settings-phone" className="input" value={form.phone} onChange={event=>change('phone',event.target.value)}/></div><div className="field"><label htmlFor="settings-currency">Currency code *</label><input id="settings-currency" className="input" maxLength={5} value={form.currency} onChange={event=>change('currency',event.target.value)}/></div><div className="field span-2"><label htmlFor="settings-footer">Receipt footer</label><textarea id="settings-footer" className="textarea" maxLength={180} value={form.receiptFooter} onChange={event=>change('receiptFooter',event.target.value)}/></div><div className="field"><label htmlFor="settings-width">Browser print width</label><select id="settings-width" className="select" value={form.printWidth} onChange={event=>change('printWidth',event.target.value)}><option value="narrow">Narrow receipt</option><option value="wide">Wide receipt</option></select></div><label className="check-setting"><input type="checkbox" checked={form.compactDisplay} onChange={event=>change('compactDisplay',event.target.checked)}/> Compact register display</label></div><div className="settings-actions"><span className="page-subtitle">{saved?'Changes are saved locally when submitted.':'Unsaved changes'}</span><button className="btn btn-primary" type="submit"><Check size={14}/> Save settings</button></div><p className="page-subtitle"><Printer size={13}/> Receipt printing opens the browser print dialog; no physical printer integration is included.</p></form></div>;
+}
 
 interface CartEntry { item: MenuItem; quantity: number; note: string }
 function PosPage() {
@@ -285,6 +441,7 @@ function PosPage() {
   const [checkout, setCheckout] = useState(false);
   const [method, setMethod] = useState<PaymentMethod>('Cash');
   const [received, setReceived] = useState('');
+  const [reference, setReference] = useState('');
   const [completed, setCompleted] = useState<Order | null>(null);
   const categories = [...data.categories].sort((a, b) => a.sortOrder - b.sortOrder);
   const items = data.menuItems.filter(item => item.available && (selectedCategory === 'all' || item.categoryId === selectedCategory) && `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()));
@@ -303,16 +460,22 @@ function PosPage() {
     const table = data.tables.find(entry => entry.id === draftTableId);
     const createdAt = now();
     const orderId = makeId();
+    const payment: Payment = {
+      id: makeId(), orderId, dateTime: createdAt, createdAt, method, amount: total, status: 'paid',
+      amountReceived: method === 'Cash' ? cashReceived : undefined,
+      change: method === 'Cash' ? cashReceived - total : undefined,
+      reference: reference.trim() || undefined,
+    };
     const order: Order = {
       id: orderId, orderNumber: `JH-${String(data.orders.length + 1).padStart(4, '0')}`, createdAt, updatedAt: createdAt, type, status: 'paid', tableId: type === 'Dine-in' ? table?.id : undefined, tableNameSnapshot: type === 'Dine-in' ? table?.name : undefined,
       customerName: customerName.trim() || undefined, customerPhone: customerPhone.trim() || undefined, deliveryAddress: deliveryAddress.trim() || undefined, notes: orderNotes.trim() || undefined, subtotal, discount: parsedDiscount, deliveryCharge: charge, total, cashierName: user?.name || 'Cashier',
       items: cart.map(entry => ({ menuItemId: entry.item.id, name: entry.item.name, unitPrice: entry.item.price, quantity: entry.quantity, lineTotal: entry.item.price * entry.quantity, note: entry.note || undefined })),
-      payment: { id: makeId(), orderId, method, amount: total, amountReceived: method === 'Cash' ? cashReceived : undefined, change: method === 'Cash' ? cashReceived - total : undefined, createdAt },
+      payment,
     };
-    setData(current => ({ ...current, orders: [...current.orders, order] }));
-    setCompleted(order); setCheckout(false); setCart([]); setDiscount('0'); setDeliveryCharge('0'); setCustomerName(''); setCustomerPhone(''); setDeliveryAddress(''); setOrderNotes(''); setReceived(''); setDraftTableId(null);
+    setData(current => ({ ...current, orders: [...current.orders, order], payments: [...current.payments.filter(entry => entry.orderId !== orderId), payment] }));
+    setCompleted(order); setCheckout(false); setCart([]); setDiscount('0'); setDeliveryCharge('0'); setCustomerName(''); setCustomerPhone(''); setDeliveryAddress(''); setOrderNotes(''); setReceived(''); setReference(''); setDraftTableId(null);
   };
-  const resetOrder = () => { setCompleted(null); setType('Dine-in'); };
+  const resetOrder = () => { setCompleted(null); setType('Dine-in'); setMethod('Cash'); };
   return <div className="page"><PageHeader eyebrow="POINT OF SALE" title="Build an order." subtitle="Tap an item to add it. Quantities and totals update as you go." action={<span className="badge badge-green"><i className="local-dot" /> Ready for service</span>} />
     <div className="pos-layout"><div className="pos-main">
       <div className="order-types">{(['Dine-in', 'Takeaway', 'Delivery'] as OrderType[]).map((value, i) => <button key={value} className={`type-choice ${type === value ? 'active' : ''}`} onClick={() => { setType(value); if (value !== 'Dine-in') setDraftTableId(null); }} data-testid={`button-order-type-${value.toLowerCase()}`}><strong>{value}</strong><small>{['A table in the room', 'Collect at the counter', 'To your doorstep'][i]}</small></button>)}</div>
@@ -329,7 +492,45 @@ function PosPage() {
         <div className="cart-actions"><button className="btn btn-quiet btn-sm" onClick={() => { setCart([]); toast('Ticket cleared.'); }} disabled={!cart.length} data-testid="button-clear-cart">Clear</button><button className="btn btn-primary" onClick={() => setCheckout(true)} disabled={!cart.length} data-testid="button-checkout">Take payment <ChevronRight size={15} /></button></div>
       </aside>
     </div>
-    {checkout && <Dialog title="Settle this ticket" onClose={() => setCheckout(false)}><div className="status-banner" style={{ marginBottom: 17 }}><ReceiptText size={16} /> <span>{cart.reduce((sum, entry) => sum + entry.quantity, 0)} items · <b>{money(total, currency(data))}</b> due</span></div><div className="field"><label>Payment method</label><div className="payment-methods">{(['Cash', 'Card', 'Easypaisa', 'JazzCash', 'Other'] as PaymentMethod[]).map(value => <button key={value} className={`pay-method ${method === value ? 'active' : ''}`} onClick={() => setMethod(value)} data-testid={`payment-${value.toLowerCase()}`}>{value}</button>)}</div></div>{method === 'Cash' && <div className="form-grid" style={{ marginTop: 16 }}><div className="field"><label htmlFor="received">Cash received</label><input id="received" type="number" min={total} className="input" autoFocus value={received} onChange={event => setReceived(event.target.value)} placeholder={String(total)} data-testid="input-cash-received" /></div><div className="field"><label>Change due</label><div className="input" style={{ background: 'hsl(var(--secondary))' }}>{money(Math.max(0, (Number(received) || 0) - total), currency(data))}</div></div></div>}{method !== 'Cash' && <p className="page-subtitle" style={{ marginTop: 12 }}>Record the full bill against {method}. No external payment service is connected.</p>}<div className="dialog-actions" style={{ padding: '22px 0 0' }}><button className="btn" onClick={() => setCheckout(false)}>Go back</button><button className="btn btn-primary" onClick={complete} data-testid="button-complete-payment"><Check size={14} /> Complete sale</button></div></Dialog>}
+    {checkout && (
+      <Dialog title="Settle this ticket" onClose={() => setCheckout(false)}>
+        <div className="status-banner" style={{ marginBottom: 17 }}>
+          <ReceiptText size={16} />
+          <span>{cart.reduce((sum, entry) => sum + entry.quantity, 0)} items · <b>{money(total, currency(data))}</b> due</span>
+        </div>
+        <div className="field">
+          <label>Payment method</label>
+          <div className="payment-methods">
+            {(['Cash', 'Card', 'Easypaisa', 'JazzCash', 'Other'] as PaymentMethod[]).map(value => (
+              <button key={value} className={`pay-method ${method === value ? 'active' : ''}`} onClick={() => setMethod(value)} data-testid={`payment-${value.toLowerCase()}`}>{value}</button>
+            ))}
+          </div>
+        </div>
+        {method === 'Cash' && (
+          <div className="form-grid" style={{ marginTop: 16 }}>
+            <div className="field">
+              <label htmlFor="received">Cash received</label>
+              <input id="received" type="number" min={total} className="input" autoFocus value={received} onChange={event => setReceived(event.target.value)} placeholder={String(total)} data-testid="input-cash-received" />
+            </div>
+            <div className="field">
+              <label>Change due</label>
+              <div className="input" style={{ background: 'hsl(var(--secondary))' }}>{money(Math.max(0, (Number(received) || 0) - total), currency(data))}</div>
+            </div>
+          </div>
+        )}
+        {method !== 'Cash' && <p className="page-subtitle" style={{ marginTop: 12 }}>Record the full bill against {method}. No external payment service is connected.</p>}
+        <div className="field" style={{ marginTop: 16 }}>
+          <label htmlFor="payment-reference">Transaction/reference number (optional)</label>
+          <input id="payment-reference" className="input" value={reference} onChange={event => setReference(event.target.value)} data-testid="input-payment-reference" />
+        </div>
+        <div className="dialog-actions" style={{ padding: '22px 0 0' }}>
+          <button className="btn" onClick={() => setCheckout(false)}>Go back</button>
+          <button className="btn btn-primary" onClick={complete} data-testid="button-complete-payment"><Check size={14} /> Complete sale</button>
+        </div>
+      </Dialog>
+    )}
     {completed && <Dialog title="Payment recorded" onClose={resetOrder} wide><div className="status-banner" style={{ marginBottom: 18 }}><Check size={16} /> Order {completed.orderNumber} is paid and saved on this device.</div><Receipt order={completed} data={data} /><div className="dialog-actions" style={{ paddingBottom: 0 }}><button className="btn" onClick={() => printReceipt()} data-testid="button-print-receipt"><Printer size={14} /> Print receipt</button><button className="btn btn-primary" onClick={resetOrder} data-testid="button-new-ticket">Start next order <ChevronRight size={14} /></button></div></Dialog>}
   </div>;
 }
+
+export default App;
