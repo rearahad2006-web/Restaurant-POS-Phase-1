@@ -117,10 +117,8 @@ function Receipt({ order, data }: { order: Order; data: AppData }) {
           <br />
           {data.settings.phone}
         </div>
-        <div>
-      {order.status === 'cancelled' ? 'CANCELLED · ' : ''}
-          {order.orderNumber}
-        </div>
+        <div>{order.status === 'cancelled' ? 'CANCELLED · ' : ''}Order {order.orderNumber}</div>
+        <div className="receipt-sub">ID {order.id}</div>
         <div>{new Date(order.createdAt).toLocaleString()}</div>
       </div>
       <div className="receipt-rule" />
@@ -129,20 +127,17 @@ function Receipt({ order, data }: { order: Order; data: AppData }) {
         {order.tableNameSnapshot ? ` · ${order.tableNameSnapshot}` : ''}
       </div>
       {order.customerName && (
-        <div>
-          {order.customerName} · {order.customerPhone}
-        </div>
+        <div>{order.customerName}{order.customerPhone ? ` · ${order.customerPhone}` : ''}</div>
       )}
       {order.deliveryAddress && <div>{order.deliveryAddress}</div>}
       <div className="receipt-rule" />
       {order.items.map((item, index) => (
         <div key={`${item.menuItemId}-${index}`}>
           <div className="receipt-line">
-            <span>
-              {item.quantity} × {item.name}
-            </span>
+            <span>{item.quantity} × {item.name}</span>
             <span>{money(item.lineTotal, currency(data))}</span>
           </div>
+          <div className="receipt-sub">Unit price: {money(item.unitPrice, currency(data))}</div>
           {item.note && <div className="receipt-sub">Note: {item.note}</div>}
         </div>
       ))}
@@ -375,12 +370,12 @@ function PaymentsPage() {
 
 const expenseCategories = ['Grocery', 'Raw Material', 'Gas', 'Electricity', 'Water', 'Rent', 'Salary', 'Delivery', 'Maintenance', 'Cleaning', 'Packaging', 'Other'];
 const expenseMethods: PaymentMethod[] = ['Cash', 'Card', 'Easypaisa', 'JazzCash', 'Other'];
-type ExpenseDraft = { dateTime: string; purpose: string; category: string; quantity: string; unitPrice: string; paymentMethod: PaymentMethod; supplier: string; notes: string };
+type ExpenseDraft = { dateTime: string; purpose: string; category: string; quantity: string; unitPrice: string; directTotal: boolean; total: string; paymentMethod: PaymentMethod; supplier: string; notes: string };
 const toLocalDateTimeField = (value = now()) => {
   const date = new Date(value);
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 };
-const emptyExpenseDraft = (): ExpenseDraft => ({ dateTime: toLocalDateTimeField(), purpose: '', category: 'Grocery', quantity: '1', unitPrice: '', paymentMethod: 'Cash', supplier: '', notes: '' });
+const emptyExpenseDraft = (): ExpenseDraft => ({ dateTime: toLocalDateTimeField(), purpose: '', category: 'Grocery', quantity: '1', unitPrice: '', directTotal: false, total: '', paymentMethod: 'Cash', supplier: '', notes: '' });
 
 function ExpensesPage() {
   const { data, setData, user, toast } = useStore();
@@ -431,6 +426,8 @@ function ExpensesPage() {
       category: expense.category,
       quantity: String(expense.quantity),
       unitPrice: String(expense.unitPrice),
+      directTotal: expense.directTotal ?? false,
+      total: String(expense.total),
       paymentMethod: expense.paymentMethod,
       supplier: expense.supplier || '',
       notes: expense.notes || '',
@@ -441,9 +438,11 @@ function ExpensesPage() {
     event.preventDefault();
     const quantity = Number(draft.quantity);
     const unitPrice = Number(draft.unitPrice);
+    const directTotal = Number(draft.total);
     const date = new Date(draft.dateTime);
-    if (!draft.purpose.trim() || !draft.category || !draft.paymentMethod || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitPrice) || unitPrice <= 0 || Number.isNaN(date.getTime())) {
-      setFormError('Enter a purpose, valid date, positive quantity and unit price.');
+    const total = draft.directTotal ? directTotal : quantity * unitPrice;
+    if (!draft.purpose.trim() || !draft.category || !draft.paymentMethod || (!draft.directTotal && (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitPrice) || unitPrice <= 0)) || !Number.isFinite(total) || total <= 0 || Number.isNaN(date.getTime())) {
+      setFormError(draft.directTotal ? 'Enter a purpose, valid date and positive total amount.' : 'Enter a purpose, valid date, positive quantity and unit price.');
       return;
     }
     const existing = typeof editing === 'object' ? editing : null;
@@ -453,9 +452,10 @@ function ExpensesPage() {
       dateTime: date.toISOString(),
       purpose: draft.purpose.trim(),
       category: draft.category,
-      quantity,
-      unitPrice,
-      total: quantity * unitPrice,
+      quantity: draft.directTotal ? 1 : quantity,
+      unitPrice: draft.directTotal ? total : unitPrice,
+      total,
+      directTotal: draft.directTotal,
       paymentMethod: draft.paymentMethod,
       supplier: draft.supplier.trim() || undefined,
       notes: draft.notes.trim() || undefined,
@@ -545,9 +545,16 @@ function ExpensesPage() {
               <div className="field span-2"><label htmlFor="expense-purpose">Item / purpose *</label><input id="expense-purpose" className="input" value={draft.purpose} onChange={event => setDraft(current => ({ ...current, purpose: event.target.value }))} required data-testid="input-expense-purpose" /></div>
               <div className="field"><label htmlFor="expense-category">Category *</label><select id="expense-category" className="select" value={draft.category} onChange={event => setDraft(current => ({ ...current, category: event.target.value }))} data-testid="select-expense-category">{expenseCategories.map(value => <option key={value}>{value}</option>)}</select></div>
               <div className="field"><label htmlFor="expense-datetime">Date and time *</label><input id="expense-datetime" className="input" type="datetime-local" value={draft.dateTime} onChange={event => setDraft(current => ({ ...current, dateTime: event.target.value }))} required data-testid="input-expense-datetime" /></div>
-              <div className="field"><label htmlFor="expense-quantity">Quantity *</label><input id="expense-quantity" className="input" type="number" min="0.01" step="any" value={draft.quantity} onChange={event => setDraft(current => ({ ...current, quantity: event.target.value }))} required data-testid="input-expense-quantity" /></div>
-              <div className="field"><label htmlFor="expense-unit-price">Unit price *</label><input id="expense-unit-price" className="input" type="number" min="0.01" step="any" value={draft.unitPrice} onChange={event => setDraft(current => ({ ...current, unitPrice: event.target.value }))} required data-testid="input-expense-unit-price" /></div>
-              <div className="field"><label htmlFor="expense-total">Total amount</label><div id="expense-total" className="input expense-total" data-testid="text-expense-total">{money((Number(draft.quantity) || 0) * (Number(draft.unitPrice) || 0), currency(data))}</div></div>
+              <div className="field span-2"><label className="check-setting"><input type="checkbox" checked={draft.directTotal} onChange={event => setDraft(current => ({ ...current, directTotal: event.target.checked, total: event.target.checked && !current.total ? String((Number(current.quantity) || 0) * (Number(current.unitPrice) || 0)) : current.total }))} data-testid="input-expense-direct-total" /> Enter a direct total when quantity and unit price do not apply</label></div>
+              {draft.directTotal ? (
+                <div className="field"><label htmlFor="expense-total">Total amount *</label><input id="expense-total" className="input" type="number" min="0.01" step="0.01" value={draft.total} onChange={event => setDraft(current => ({ ...current, total: event.target.value }))} required data-testid="input-expense-total" /></div>
+              ) : (
+                <>
+                  <div className="field"><label htmlFor="expense-quantity">Quantity *</label><input id="expense-quantity" className="input" type="number" min="0.01" step="any" value={draft.quantity} onChange={event => setDraft(current => ({ ...current, quantity: event.target.value }))} required data-testid="input-expense-quantity" /></div>
+                  <div className="field"><label htmlFor="expense-unit-price">Unit price *</label><input id="expense-unit-price" className="input" type="number" min="0.01" step="any" value={draft.unitPrice} onChange={event => setDraft(current => ({ ...current, unitPrice: event.target.value }))} required data-testid="input-expense-unit-price" /></div>
+                  <div className="field"><label htmlFor="expense-total">Total amount</label><div id="expense-total" className="input expense-total" data-testid="text-expense-total">{money((Number(draft.quantity) || 0) * (Number(draft.unitPrice) || 0), currency(data))}</div></div>
+                </>
+              )}
               <div className="field"><label htmlFor="expense-method">Payment method *</label><select id="expense-method" className="select" value={draft.paymentMethod} onChange={event => setDraft(current => ({ ...current, paymentMethod: event.target.value as PaymentMethod }))} data-testid="select-expense-method">{expenseMethods.map(value => <option key={value}>{value}</option>)}</select></div>
               <div className="field"><label htmlFor="expense-supplier">Supplier / person</label><input id="expense-supplier" className="input" value={draft.supplier} onChange={event => setDraft(current => ({ ...current, supplier: event.target.value }))} data-testid="input-expense-supplier" /></div>
               <div className="field span-2"><label htmlFor="expense-notes">Notes</label><textarea id="expense-notes" className="textarea" value={draft.notes} onChange={event => setDraft(current => ({ ...current, notes: event.target.value }))} data-testid="input-expense-notes" /></div>
@@ -563,7 +570,7 @@ function ExpensesPage() {
             <div><span>Item / purpose</span><b>{viewing.purpose}</b></div>
             <div><span>Date and time</span><b>{new Date(viewing.dateTime).toLocaleString()}</b></div>
             <div><span>Category</span><b>{viewing.category}</b></div>
-            <div><span>Quantity × unit price</span><b>{viewing.quantity} × {money(viewing.unitPrice, currency(data))}</b></div>
+            <div><span>{viewing.directTotal ? 'Amount entry' : 'Quantity × unit price'}</span><b>{viewing.directTotal ? 'Direct total' : `${viewing.quantity} × ${money(viewing.unitPrice, currency(data))}`}</b></div>
             <div><span>Total amount</span><b>{money(viewing.total, currency(data))}</b></div>
             <div><span>Payment</span><b>{viewing.paymentMethod}</b></div>
             <div><span>Supplier / person</span><b>{viewing.supplier || '—'}</b></div>

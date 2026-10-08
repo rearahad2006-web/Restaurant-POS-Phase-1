@@ -38,7 +38,7 @@ pnpm --filter @workspace/restaurant-pos run typecheck
 
 Both visible sample accounts are development-only. Local PIN sign-in is not secure production authentication. Managers can configure local accounts and restaurant settings; Cashiers are limited to POS, Orders, and Payments.
 
-The Manager Panel includes Dashboard, Orders, Payments, Menu, Tables, Reports, Staff, and Settings. Cash checkout records received cash and change; non-cash payments can store an optional reference. Legacy embedded payment data is migrated into the separate local payment ledger when loaded.
+The Manager Panel includes Dashboard, POS, Orders, Payments, Expenses, Menu, Tables, Reports, Staff, and Settings. Managers can record and filter local expenses, including direct-total expenses, and review sales, expenses, and net amount in Reports. Restaurant logos are saved in local settings and included on receipts. Cash checkout records received cash and change; non-cash payments can store an optional reference. Legacy embedded payment data is migrated into the separate local payment ledger when loaded.
 
 ## Storage and portability
 
@@ -48,7 +48,7 @@ The repository boundary keeps storage isolated in the browser-local adapter. Thi
 
 ## Receipts
 
-Receipt data and print behavior are isolated in `src/services/printing.ts`. Print/Reprint opens the browser print dialog only; no physical printer connection is provided.
+Receipt previews, print, and reprint use the same saved order and payment snapshots. Receipts include restaurant details, optional logo, item quantities and unit prices, totals, and payment details. Print/Reprint opens the browser print dialog only; no physical printer connection is provided.
 
 ## Project structure
 
