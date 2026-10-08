@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, createContext, useContext, type ReactNode, type FormEvent } from 'react';
 import { Route, Switch, Link, useLocation } from 'wouter';
-import { LayoutDashboard, ShoppingCart, UtensilsCrossed, Armchair, ClipboardList, Search, Plus, Minus, Trash2, Pencil, Printer, LogOut, Banknote, CircleDollarSign, Clock3, Check, X, ChevronRight, CircleHelp, ReceiptText, WifiOff, PackagePlus, Users, Salad, CreditCard, MapPin, Phone, FileText, AlertCircle, ArrowUpRight, BarChart3, Settings, UserRound, CalendarDays } from 'lucide-react';
-import { AppData, Category, MenuItem, Order, OrderItem, OrderType, PaymentMethod, Payment, Table, UserRole, money, makeId, now } from './domain';
+import { LayoutDashboard, ShoppingCart, UtensilsCrossed, Armchair, ClipboardList, Search, Plus, Minus, Trash2, Pencil, Printer, LogOut, Banknote, CircleDollarSign, Clock3, Check, X, ChevronRight, CircleHelp, ReceiptText, WifiOff, PackagePlus, Users, Salad, CreditCard, MapPin, Phone, FileText, AlertCircle, ArrowUpRight, BarChart3, Settings, UserRound, CalendarDays, Eye } from 'lucide-react';
+import { AppData, Category, Expense, MenuItem, Order, OrderItem, OrderType, PaymentMethod, Payment, Table, UserRole, money, makeId, now } from './domain';
 import { repository } from './storage/repository';
 import { printReceipt } from './services/printing';
 
@@ -24,7 +24,7 @@ function App() {
   const toast = (message: string) => { setToastText(message); window.setTimeout(() => setToastText(''), 2600); };
   if (!data) return <div className="login-screen"><div className="login-art"><div className="login-brand"><div className="brand-mark">J</div><div><div className="brand-name">Juniper & Hearth</div><div className="brand-sub">Local service desk</div></div></div><div className="login-hero"><h1>Service, in good hands.</h1><p>Starting your local register and preparing today's menu.</p></div><span className="login-food-note">A neighborhood table since 2019</span></div><div className="login-form-side"><div className="panel" style={{ padding: 24, width: 320 }}><div className="stat-label">OPENING REGISTER</div><div className="stat-value">Ready shortly</div><div style={{ height: 8, borderRadius: 20, background: 'hsl(var(--secondary))' }} /></div></div></div>;
   return <StoreContext.Provider value={{ data, setData, user, setUser, draftTableId, setDraftTableId, toast }}>
-     <Switch><Route path="/login" component={LoginPage} /><Route><ProtectedShell><Switch><Route path="/" component={DashboardPage} /><Route path="/dashboard" component={DashboardPage} /><Route path="/pos" component={PosPage} /><Route path="/tables" component={TablesPage} /><Route path="/menu" component={MenuPage} /><Route path="/orders" component={OrdersPage} /><Route path="/payments" component={PaymentsPage} /><Route path="/reports" component={ReportsPage} /><Route path="/staff" component={StaffPage} /><Route path="/settings" component={SettingsPage} /><Route component={NotFoundPage} /></Switch></ProtectedShell></Route></Switch>
+      <Switch><Route path="/login" component={LoginPage} /><Route><ProtectedShell><Switch><Route path="/" component={DashboardPage} /><Route path="/dashboard" component={DashboardPage} /><Route path="/pos" component={PosPage} /><Route path="/tables" component={TablesPage} /><Route path="/menu" component={MenuPage} /><Route path="/orders" component={OrdersPage} /><Route path="/payments" component={PaymentsPage} /><Route path="/expenses" component={ExpensesPage} /><Route path="/reports" component={ReportsPage} /><Route path="/staff" component={StaffPage} /><Route path="/settings" component={SettingsPage} /><Route component={NotFoundPage} /></Switch></ProtectedShell></Route></Switch>
     {toastText && <div className="notice" role="status" data-testid="status-notice">{toastText}</div>}
   </StoreContext.Provider>;
 }
@@ -41,6 +41,7 @@ function ProtectedShell({ children }: { children: ReactNode }) {
     { href: '/pos', label: 'POS', icon: ShoppingCart },
     { href: '/orders', label: 'Orders', icon: ClipboardList },
     { href: '/payments', label: 'Payments', icon: Banknote },
+    { href: '/expenses', label: 'Expenses', icon: ReceiptText },
     { href: '/menu', label: 'Menu', icon: UtensilsCrossed },
     { href: '/tables', label: 'Tables', icon: Armchair },
     { href: '/reports', label: 'Reports', icon: BarChart3 },
@@ -109,6 +110,7 @@ function Receipt({ order, data }: { order: Order; data: AppData }) {
   return (
     <div className={`receipt ${data.settings.printWidth || 'narrow'}`} data-testid={`receipt-${order.id}`}>
       <div className="receipt-center">
+        {data.settings.logoDataUrl && <img className="receipt-logo" src={data.settings.logoDataUrl} alt={`${data.settings.name} logo`} data-testid={`receipt-logo-${order.id}`} />}
         <h2>{data.settings.name}</h2>
         <div className="receipt-sub">
           {data.settings.address}
@@ -181,6 +183,12 @@ function Receipt({ order, data }: { order: Order; data: AppData }) {
             <div className="receipt-line">
               <span>Change</span>
               <span>{money(cashPayment.change, currency(data))}</span>
+            </div>
+          )}
+          {payment.reference && (
+            <div className="receipt-line">
+              <span>Reference</span>
+              <span className="receipt-reference">{payment.reference}</span>
             </div>
           )}
         </>
@@ -365,6 +373,210 @@ function PaymentsPage() {
   );
 }
 
+const expenseCategories = ['Grocery', 'Raw Material', 'Gas', 'Electricity', 'Water', 'Rent', 'Salary', 'Delivery', 'Maintenance', 'Cleaning', 'Packaging', 'Other'];
+const expenseMethods: PaymentMethod[] = ['Cash', 'Card', 'Easypaisa', 'JazzCash', 'Other'];
+type ExpenseDraft = { dateTime: string; purpose: string; category: string; quantity: string; unitPrice: string; paymentMethod: PaymentMethod; supplier: string; notes: string };
+const toLocalDateTimeField = (value = now()) => {
+  const date = new Date(value);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+};
+const emptyExpenseDraft = (): ExpenseDraft => ({ dateTime: toLocalDateTimeField(), purpose: '', category: 'Grocery', quantity: '1', unitPrice: '', paymentMethod: 'Cash', supplier: '', notes: '' });
+
+function ExpensesPage() {
+  const { data, setData, user, toast } = useStore();
+  const [period, setPeriod] = useState('all');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [category, setCategory] = useState('all');
+  const [method, setMethod] = useState('all');
+  const [editing, setEditing] = useState<Expense | 'new' | null>(null);
+  const [viewing, setViewing] = useState<Expense | null>(null);
+  const [draft, setDraft] = useState<ExpenseDraft>(emptyExpenseDraft);
+  const [formError, setFormError] = useState('');
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayEnd = new Date(today);
+  todayEnd.setDate(todayEnd.getDate() + 1);
+  const weekStart = new Date(today);
+  weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 7);
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+  let start = 0;
+  let end = Infinity;
+  if (period === 'today') { start = today.getTime(); end = todayEnd.getTime(); }
+  if (period === 'week') { start = weekStart.getTime(); end = weekEnd.getTime(); }
+  if (period === 'month') { start = monthStart.getTime(); end = monthEnd.getTime(); }
+  if (period === 'custom') {
+    if (fromDate) start = new Date(`${fromDate}T00:00:00`).getTime();
+    if (toDate) { const endDate = new Date(`${toDate}T00:00:00`); endDate.setDate(endDate.getDate() + 1); end = endDate.getTime(); }
+  }
+  const invalidRange = period === 'custom' && !!fromDate && !!toDate && start >= end;
+  const rows = [...data.expenses].filter(expense => {
+    const time = new Date(expense.dateTime).getTime();
+    return !invalidRange && time >= start && time < end &&
+      (category === 'all' || expense.category === category) &&
+      (method === 'all' || expense.paymentMethod === method);
+  }).sort((a, b) => b.dateTime.localeCompare(a.dateTime));
+  const total = rows.reduce((sum, expense) => sum + expense.total, 0);
+
+  const openEditor = (expense?: Expense) => {
+    setEditing(expense || 'new');
+    setViewing(null);
+    setDraft(expense ? {
+      dateTime: toLocalDateTimeField(expense.dateTime),
+      purpose: expense.purpose,
+      category: expense.category,
+      quantity: String(expense.quantity),
+      unitPrice: String(expense.unitPrice),
+      paymentMethod: expense.paymentMethod,
+      supplier: expense.supplier || '',
+      notes: expense.notes || '',
+    } : emptyExpenseDraft());
+    setFormError('');
+  };
+  const saveExpense = (event: FormEvent) => {
+    event.preventDefault();
+    const quantity = Number(draft.quantity);
+    const unitPrice = Number(draft.unitPrice);
+    const date = new Date(draft.dateTime);
+    if (!draft.purpose.trim() || !draft.category || !draft.paymentMethod || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitPrice) || unitPrice <= 0 || Number.isNaN(date.getTime())) {
+      setFormError('Enter a purpose, valid date, positive quantity and unit price.');
+      return;
+    }
+    const existing = typeof editing === 'object' ? editing : null;
+    const stamp = now();
+    const expense: Expense = {
+      id: existing?.id || `EXP-${makeId().toUpperCase()}`,
+      dateTime: date.toISOString(),
+      purpose: draft.purpose.trim(),
+      category: draft.category,
+      quantity,
+      unitPrice,
+      total: quantity * unitPrice,
+      paymentMethod: draft.paymentMethod,
+      supplier: draft.supplier.trim() || undefined,
+      notes: draft.notes.trim() || undefined,
+      addedBy: existing?.addedBy || user?.name || 'Manager',
+      createdAt: existing?.createdAt || stamp,
+      updatedAt: stamp,
+    };
+    setData(current => ({
+      ...current,
+      expenses: existing
+        ? current.expenses.map(entry => entry.id === existing.id ? expense : entry)
+        : [...current.expenses, expense],
+    }));
+    setEditing(null);
+    toast(existing ? 'Expense updated.' : 'Expense saved on this device.');
+  };
+  const deleteExpense = (expense: Expense) => {
+    if (!window.confirm(`Delete expense ${expense.id} (${expense.purpose})?`)) return;
+    setData(current => ({ ...current, expenses: current.expenses.filter(entry => entry.id !== expense.id) }));
+    if (viewing?.id === expense.id) setViewing(null);
+    toast('Expense deleted.');
+  };
+
+  return (
+    <div className="page">
+      <PageHeader
+        eyebrow="LOCAL EXPENSE BOOK"
+        title="Expenses."
+        subtitle="Record restaurant spending on this device. Expense totals use saved records."
+        action={<button className="btn btn-primary" onClick={() => openEditor()} data-testid="button-add-expense"><Plus size={15} /> Add expense</button>}
+      />
+      <div className="stat-grid expense-stat-grid">
+        <Stat label="Total expenses" value={money(total, currency(data))} foot={`${rows.length} matching ${rows.length === 1 ? 'expense' : 'expenses'}`} icon={<CircleDollarSign />} />
+        <Stat label="Expense records" value={String(rows.length)} foot="Current filters" icon={<ReceiptText />} />
+      </div>
+      <div className="toolbar expense-filters">
+        <select className="select filter-select" value={period} onChange={event => setPeriod(event.target.value)} aria-label="Filter expense date" data-testid="filter-expense-period">
+          <option value="all">All dates</option><option value="today">Today</option><option value="week">This week</option><option value="month">This month</option><option value="custom">Custom range</option>
+        </select>
+        {period === 'custom' && (
+          <>
+            <input className="input filter-select" type="date" value={fromDate} onChange={event => setFromDate(event.target.value)} aria-label="Expense start date" data-testid="filter-expense-from" />
+            <input className="input filter-select" type="date" value={toDate} onChange={event => setToDate(event.target.value)} aria-label="Expense end date" data-testid="filter-expense-to" />
+          </>
+        )}
+        <select className="select filter-select" value={category} onChange={event => setCategory(event.target.value)} aria-label="Filter expense category" data-testid="filter-expense-category">
+          <option value="all">All categories</option>{expenseCategories.map(value => <option key={value}>{value}</option>)}
+        </select>
+        <select className="select filter-select" value={method} onChange={event => setMethod(event.target.value)} aria-label="Filter expense payment method" data-testid="filter-expense-method">
+          <option value="all">All payment methods</option>{expenseMethods.map(value => <option key={value}>{value}</option>)}
+        </select>
+      </div>
+      {invalidRange && <p className="validation" role="alert">The end date must be on or after the start date.</p>}
+      <section className="panel">
+        <div className="panel-head">
+          <div><div className="eyebrow">SAVED EXPENSE RECORDS</div><h2 className="panel-title">Expense book</h2></div>
+          <span className="badge">{rows.length} records</span>
+        </div>
+        {rows.length ? (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Expense ID</th><th>Date</th><th>Item / purpose</th><th>Category</th><th>Amount</th><th>Payment</th><th>Added by</th><th>Actions</th></tr></thead>
+              <tbody>{rows.map(expense => (
+                <tr key={expense.id} data-testid={`row-expense-${expense.id}`}>
+                  <td className="mono">{expense.id}</td>
+                  <td>{new Date(expense.dateTime).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                  <td>{expense.purpose}</td>
+                  <td>{expense.category}</td>
+                  <td className="mono">{money(expense.total, currency(data))}</td>
+                  <td>{expense.paymentMethod}</td>
+                  <td>{expense.addedBy}</td>
+                  <td><div className="expense-actions">
+                    <button className="btn btn-sm" onClick={() => setViewing(expense)} aria-label={`View ${expense.purpose}`} data-testid={`button-view-expense-${expense.id}`}><Eye size={13} /> View</button>
+                    <button className="btn btn-sm" onClick={() => openEditor(expense)} aria-label={`Edit ${expense.purpose}`} data-testid={`button-edit-expense-${expense.id}`}><Pencil size={13} /> Edit</button>
+                    <button className="btn btn-sm btn-danger" onClick={() => deleteExpense(expense)} aria-label={`Delete ${expense.purpose}`} data-testid={`button-delete-expense-${expense.id}`}><Trash2 size={13} /> Delete</button>
+                  </div></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        ) : <Empty title="No expenses in this view" description="Add an expense or adjust the date, category, and payment filters." icon={<ReceiptText size={20} />} />}
+      </section>
+      {editing && (
+        <Dialog title={editing === 'new' ? 'Add expense' : `Edit expense · ${editing.id}`} onClose={() => setEditing(null)} wide>
+          <form onSubmit={saveExpense} data-testid="form-expense">
+            <div className="form-grid">
+              <div className="field span-2"><label htmlFor="expense-purpose">Item / purpose *</label><input id="expense-purpose" className="input" value={draft.purpose} onChange={event => setDraft(current => ({ ...current, purpose: event.target.value }))} required data-testid="input-expense-purpose" /></div>
+              <div className="field"><label htmlFor="expense-category">Category *</label><select id="expense-category" className="select" value={draft.category} onChange={event => setDraft(current => ({ ...current, category: event.target.value }))} data-testid="select-expense-category">{expenseCategories.map(value => <option key={value}>{value}</option>)}</select></div>
+              <div className="field"><label htmlFor="expense-datetime">Date and time *</label><input id="expense-datetime" className="input" type="datetime-local" value={draft.dateTime} onChange={event => setDraft(current => ({ ...current, dateTime: event.target.value }))} required data-testid="input-expense-datetime" /></div>
+              <div className="field"><label htmlFor="expense-quantity">Quantity *</label><input id="expense-quantity" className="input" type="number" min="0.01" step="any" value={draft.quantity} onChange={event => setDraft(current => ({ ...current, quantity: event.target.value }))} required data-testid="input-expense-quantity" /></div>
+              <div className="field"><label htmlFor="expense-unit-price">Unit price *</label><input id="expense-unit-price" className="input" type="number" min="0.01" step="any" value={draft.unitPrice} onChange={event => setDraft(current => ({ ...current, unitPrice: event.target.value }))} required data-testid="input-expense-unit-price" /></div>
+              <div className="field"><label htmlFor="expense-total">Total amount</label><div id="expense-total" className="input expense-total" data-testid="text-expense-total">{money((Number(draft.quantity) || 0) * (Number(draft.unitPrice) || 0), currency(data))}</div></div>
+              <div className="field"><label htmlFor="expense-method">Payment method *</label><select id="expense-method" className="select" value={draft.paymentMethod} onChange={event => setDraft(current => ({ ...current, paymentMethod: event.target.value as PaymentMethod }))} data-testid="select-expense-method">{expenseMethods.map(value => <option key={value}>{value}</option>)}</select></div>
+              <div className="field"><label htmlFor="expense-supplier">Supplier / person</label><input id="expense-supplier" className="input" value={draft.supplier} onChange={event => setDraft(current => ({ ...current, supplier: event.target.value }))} data-testid="input-expense-supplier" /></div>
+              <div className="field span-2"><label htmlFor="expense-notes">Notes</label><textarea id="expense-notes" className="textarea" value={draft.notes} onChange={event => setDraft(current => ({ ...current, notes: event.target.value }))} data-testid="input-expense-notes" /></div>
+            </div>
+            {formError && <p className="validation" role="alert">{formError}</p>}
+            <div className="dialog-actions expense-form-actions"><span className="page-subtitle">{editing === 'new' ? `Expense ID will be generated · Added by ${user?.name || 'Manager'}` : `Original ID ${editing.id} is retained`}</span><button type="button" className="btn" onClick={() => setEditing(null)}>Cancel</button><button className="btn btn-primary" type="submit" data-testid="button-save-expense">Save expense</button></div>
+          </form>
+        </Dialog>
+      )}
+      {viewing && (
+        <Dialog title={`Expense · ${viewing.id}`} onClose={() => setViewing(null)}>
+          <div className="expense-detail" data-testid={`detail-expense-${viewing.id}`}>
+            <div><span>Item / purpose</span><b>{viewing.purpose}</b></div>
+            <div><span>Date and time</span><b>{new Date(viewing.dateTime).toLocaleString()}</b></div>
+            <div><span>Category</span><b>{viewing.category}</b></div>
+            <div><span>Quantity × unit price</span><b>{viewing.quantity} × {money(viewing.unitPrice, currency(data))}</b></div>
+            <div><span>Total amount</span><b>{money(viewing.total, currency(data))}</b></div>
+            <div><span>Payment</span><b>{viewing.paymentMethod}</b></div>
+            <div><span>Supplier / person</span><b>{viewing.supplier || '—'}</b></div>
+            <div><span>Added by</span><b>{viewing.addedBy}</b></div>
+            {viewing.notes && <div><span>Notes</span><b>{viewing.notes}</b></div>}
+          </div>
+          <div className="dialog-actions"><button className="btn" onClick={() => setViewing(null)}>Done</button><button className="btn btn-primary" onClick={() => openEditor(viewing)} data-testid={`button-edit-viewed-expense-${viewing.id}`}><Pencil size={13} /> Edit expense</button></div>
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
 function periodStart(period: string) {
   const date = new Date(); date.setHours(0,0,0,0);
   if (period === 'today') return date.getTime();
@@ -390,15 +602,18 @@ function ReportsPage() {
     return !!order && order.status === 'paid' && (type === 'all' || order.type === type);
   });
   const total = paymentRows.reduce((sum,payment)=>sum+payment.amount,0);
+  const expenseRows = data.expenses.filter(expense => inRange(expense.dateTime));
+  const totalExpenses = expenseRows.reduce((sum, expense) => sum + expense.total, 0);
+  const netAmount = total - totalExpenses;
   const salesByType = (orderType: OrderType) => paymentRows.reduce((sum,payment) => {
     return sum + (data.orders.find(order => order.id === payment.orderId)?.type === orderType ? payment.amount : 0);
   }, 0);
   const products = new Map<string,{name:string;quantity:number;revenue:number}>();
   completed.forEach(order=>order.items.forEach(item=>{const old=products.get(item.menuItemId) || {name:item.name,quantity:0,revenue:0}; old.quantity+=item.quantity;old.revenue+=item.lineTotal;products.set(item.menuItemId,old);}));
   const best=[...products.values()].sort((a,b)=>b.quantity-a.quantity).slice(0,8);
-  return <div className="page"><PageHeader eyebrow="SERVICE PERFORMANCE" title="Reports." subtitle="A readout of saved orders and payments. Cancelled sales are excluded from collected revenue." />
+  return <div className="page"><PageHeader eyebrow="SERVICE PERFORMANCE" title="Reports." subtitle="Sales honor the selected method and order-type filters; expenses use the selected date period. Cancelled sales are excluded." />
     <div className="toolbar"><select className="select filter-select" value={period} onChange={event=>setPeriod(event.target.value)} aria-label="Report period"><option value="today">Today</option><option value="day">Choose day</option><option value="week">This week</option><option value="month">This month</option></select>{period==='day'&&<input className="input filter-select" type="date" value={reportDay} onChange={event=>setReportDay(event.target.value)} aria-label="Select report day"/>}<select className="select filter-select" value={method} onChange={event=>setMethod(event.target.value)} aria-label="Report payment method"><option value="all">All payment methods</option>{(['Cash','Card','Easypaisa','JazzCash','Other'] as PaymentMethod[]).map(value=><option key={value}>{value}</option>)}</select><select className="select filter-select" value={type} onChange={event=>setType(event.target.value)} aria-label="Report order type"><option value="all">All order types</option><option>Dine-in</option><option>Takeaway</option><option>Delivery</option></select></div>
-    <div className="stat-grid"><Stat label="Net collected" value={money(total,currency(data))} foot={`${paymentRows.length} saved payments`} icon={<CircleDollarSign/>}/><Stat label="Completed" value={String(completed.length)} foot="Paid orders in period" icon={<Check/>}/><Stat label="Cancelled" value={String(cancelled.length)} foot="Cancelled orders in period" icon={<X/>}/><Stat label="Avg. completed" value={money(completed.length ? total/completed.length : 0,currency(data))} foot="Collected / completed tickets" icon={<BarChart3/>}/></div>
+    <div className="stat-grid"><Stat label="Total sales" value={money(total,currency(data))} foot={`${paymentRows.length} saved payments`} icon={<CircleDollarSign/>}/><Stat label="Total expenses" value={money(totalExpenses,currency(data))} foot={`${expenseRows.length} saved expenses · selected period`} icon={<ReceiptText/>}/><Stat label="Net amount" value={money(netAmount,currency(data))} foot="Total sales minus total expenses" icon={<Banknote/>}/><Stat label="Completed" value={String(completed.length)} foot="Paid orders in period" icon={<Check/>}/><Stat label="Cancelled" value={String(cancelled.length)} foot="Cancelled orders in period" icon={<X/>}/><Stat label="Avg. completed" value={money(completed.length ? total/completed.length : 0,currency(data))} foot="Collected / completed tickets" icon={<BarChart3/>}/></div>
     <div className="dash-grid"><section className="panel"><div className="panel-head"><div><div className="eyebrow">PAYMENT METHOD</div><h2 className="panel-title">Collected by method</h2></div></div><div className="report-breakdown">{(['Cash','Card','Easypaisa','JazzCash','Other'] as PaymentMethod[]).map(paymentMethod=>{const amount=paymentRows.filter(row=>row.method===paymentMethod).reduce((sum,row)=>sum+row.amount,0);return <div className="break-row" key={paymentMethod}><span>{paymentMethod}</span><b>{money(amount,currency(data))}</b></div>})}</div></section><section className="panel"><div className="panel-head"><div><div className="eyebrow">ORDER TYPE</div><h2 className="panel-title">Sales by order type</h2></div></div><div className="report-breakdown">{(['Dine-in','Takeaway','Delivery'] as OrderType[]).map(value=><div className="break-row" key={value}><span>{value}<small> · {completed.filter(order=>order.type===value).length} orders</small></span><b>{money(salesByType(value),currency(data))}</b></div>)}</div></section></div>
     <section className="panel" style={{marginTop:16}}><div className="panel-head"><div><div className="eyebrow">ITEM SNAPSHOTS</div><h2 className="panel-title">Best-selling items</h2></div><span className="badge">{best.length} items</span></div>{best.length?<div className="table-wrap"><table className="data-table"><thead><tr><th>Rank</th><th>Item</th><th>Units sold</th><th>Item revenue</th></tr></thead><tbody>{best.map((item,index)=><tr key={`${item.name}-${index}`}><td className="mono">{String(index+1).padStart(2,'0')}</td><td>{item.name}</td><td>{item.quantity}</td><td className="mono">{money(item.revenue,currency(data))}</td></tr>)}</tbody></table></div>:<Empty title="No completed items in this period" description="Best sellers will appear after completed tickets are recorded." icon={<Salad size={20}/>} />}</section>
   </div>;
@@ -415,14 +630,77 @@ function StaffPage() {
   return <div className="page"><PageHeader eyebrow="LOCAL ACCESS" title="Staff." subtitle="Local accounts for this register. Development accounts remain clearly marked." action={<button className="btn btn-primary" onClick={()=>open()}><Plus size={15}/> Add staff account</button>}/><section className="panel"><div className="panel-head"><div><div className="eyebrow">LOCAL ACCOUNTS</div><h2 className="panel-title">People on this register</h2></div><span className="badge">{data.users.length} accounts</span></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Account</th><th>Actions</th></tr></thead><tbody>{data.users.map(user=><tr key={user.id}><td><b>{user.name}</b></td><td className="mono">{user.username}</td><td><span className="badge">{user.role}</span></td><td>{user.developmentOnly?<span className="badge badge-orange">Development only</span>:'Local account'}</td><td><button className="btn btn-sm" onClick={()=>open(user)}><Pencil size={12}/> Edit</button> <button className="btn btn-sm btn-danger" disabled={!!user.developmentOnly} onClick={()=>remove(user)}><Trash2 size={12}/> Remove</button></td></tr>)}</tbody></table></div></section>{editing&&<Dialog title={editing==='new'?'Add staff account':'Edit staff account'} onClose={()=>setEditing(null)}><form onSubmit={save}><div className="form-grid"><div className="field span-2"><label>Name</label><input className="input" value={form.name} onChange={event=>setForm({...form,name:event.target.value})} required/></div><div className="field"><label>Username</label><input className="input" value={form.username} onChange={event=>setForm({...form,username:event.target.value})} required/></div><div className="field"><label>PIN / password</label><input className="input" value={form.password} onChange={event=>setForm({...form,password:event.target.value})} required/></div><div className="field span-2"><label>Role</label><select className="select" value={form.role} onChange={event=>setForm({...form,role:event.target.value as UserRole})}><option>Manager</option><option>Cashier</option></select></div></div>{error&&<p className="validation">{error}</p>}<div className="dialog-actions" style={{paddingRight:0,paddingBottom:0}}><button type="button" className="btn" onClick={()=>setEditing(null)}>Cancel</button><button className="btn btn-primary">Save account</button></div></form></Dialog>}</div>;
 }
 
+function prepareLogo(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/')) { reject(new Error('Choose an image file for the logo.')); return; }
+    if (file.size > 8 * 1024 * 1024) { reject(new Error('Choose an image smaller than 8 MB.')); return; }
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('This image could not be opened.')); };
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      try {
+        const maxDimension = 1200;
+        const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext('2d');
+        if (!context) { reject(new Error('This browser could not process the logo image.')); return; }
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        let dataUrl = canvas.toDataURL('image/webp', 0.86);
+        if (!dataUrl.startsWith('data:image/webp')) dataUrl = canvas.toDataURL('image/png');
+        if (dataUrl.length > 1_000_000) { reject(new Error('The optimized logo is still too large. Choose a smaller image.')); return; }
+        resolve(dataUrl);
+      } catch {
+        reject(new Error('This image could not be prepared for local storage.'));
+      }
+    };
+    image.src = objectUrl;
+  });
+}
+
 function SettingsPage() {
   const {data,setData,toast}=useStore();
   const [form,setForm]=useState(data.settings);
   const [saved,setSaved]=useState(true);
+  const [logoError,setLogoError]=useState('');
   useEffect(()=>{setForm(data.settings);setSaved(true);},[data.settings]);
   const change=(key:keyof AppData['settings'],value:string|boolean)=>{setForm(current=>({...current,[key]:value}));setSaved(false);};
   const submit=(event:FormEvent)=>{event.preventDefault();if(!form.name.trim()||!form.currency.trim()){toast('Restaurant name and currency are required.');return;}setData(current=>({...current,settings:{...current.settings,...form,name:form.name.trim(),currency:form.currency.trim().toUpperCase()}}));setSaved(true);toast('Restaurant settings saved.');};
-  return <div className="page"><PageHeader eyebrow="REGISTER PREFERENCES" title="Settings." subtitle="Restaurant identity and browser receipt presentation."/><form className="panel settings-form" onSubmit={submit}><div className="panel-head"><div><div className="eyebrow">RECEIPT IDENTITY</div><h2 className="panel-title">Restaurant details</h2></div><span className="badge badge-green">Saved on this device</span></div><div className="form-grid settings-grid"><div className="field span-2"><label htmlFor="settings-name">Restaurant name *</label><input id="settings-name" className="input" value={form.name} onChange={event=>change('name',event.target.value)} required/></div><div className="field span-2"><label htmlFor="settings-address">Address</label><input id="settings-address" className="input" value={form.address} onChange={event=>change('address',event.target.value)}/></div><div className="field"><label htmlFor="settings-phone">Phone</label><input id="settings-phone" className="input" value={form.phone} onChange={event=>change('phone',event.target.value)}/></div><div className="field"><label htmlFor="settings-currency">Currency code *</label><input id="settings-currency" className="input" maxLength={5} value={form.currency} onChange={event=>change('currency',event.target.value)}/></div><div className="field span-2"><label htmlFor="settings-footer">Receipt footer</label><textarea id="settings-footer" className="textarea" maxLength={180} value={form.receiptFooter} onChange={event=>change('receiptFooter',event.target.value)}/></div><div className="field"><label htmlFor="settings-width">Browser print width</label><select id="settings-width" className="select" value={form.printWidth} onChange={event=>change('printWidth',event.target.value)}><option value="narrow">Narrow receipt</option><option value="wide">Wide receipt</option></select></div><label className="check-setting"><input type="checkbox" checked={form.compactDisplay} onChange={event=>change('compactDisplay',event.target.checked)}/> Compact register display</label></div><div className="settings-actions"><span className="page-subtitle">{saved?'Changes are saved locally when submitted.':'Unsaved changes'}</span><button className="btn btn-primary" type="submit"><Check size={14}/> Save settings</button></div><p className="page-subtitle"><Printer size={13}/> Receipt printing opens the browser print dialog; no physical printer integration is included.</p></form></div>;
+  return (
+    <div className="page">
+      <PageHeader eyebrow="REGISTER PREFERENCES" title="Settings." subtitle="Restaurant identity and browser receipt presentation." />
+      <form className="panel settings-form" onSubmit={submit}>
+        <div className="panel-head"><div><div className="eyebrow">RECEIPT IDENTITY</div><h2 className="panel-title">Restaurant details</h2></div><span className="badge badge-green">Saved on this device</span></div>
+        <div className="form-grid settings-grid">
+          <div className="field span-2"><label htmlFor="settings-name">Restaurant name *</label><input id="settings-name" className="input" value={form.name} onChange={event=>change('name',event.target.value)} required data-testid="input-settings-name" /></div>
+          <div className="field span-2"><label htmlFor="settings-address">Address</label><input id="settings-address" className="input" value={form.address} onChange={event=>change('address',event.target.value)} data-testid="input-settings-address" /></div>
+          <div className="field"><label htmlFor="settings-phone">Phone</label><input id="settings-phone" className="input" value={form.phone} onChange={event=>change('phone',event.target.value)} data-testid="input-settings-phone" /></div>
+          <div className="field"><label htmlFor="settings-currency">Currency code *</label><input id="settings-currency" className="input" maxLength={5} value={form.currency} onChange={event=>change('currency',event.target.value)} data-testid="input-settings-currency" /></div>
+          <div className="field span-2"><label htmlFor="settings-footer">Receipt footer</label><textarea id="settings-footer" className="textarea" maxLength={180} value={form.receiptFooter} onChange={event=>change('receiptFooter',event.target.value)} data-testid="input-settings-footer" /></div>
+          <div className="field"><label htmlFor="settings-width">Browser print width</label><select id="settings-width" className="select" value={form.printWidth} onChange={event=>change('printWidth',event.target.value)} data-testid="select-settings-print-width"><option value="narrow">Narrow receipt</option><option value="wide">Wide receipt</option></select></div>
+          <label className="check-setting"><input type="checkbox" checked={form.compactDisplay} onChange={event=>change('compactDisplay',event.target.checked)} data-testid="input-settings-compact" /> Compact register display</label>
+          <div className="field span-2">
+            <label htmlFor="settings-logo">Restaurant logo</label>
+            <div className="settings-logo-row">
+              {form.logoDataUrl
+                ? <img className="settings-logo-preview" src={form.logoDataUrl} alt="Restaurant logo preview" data-testid="img-restaurant-logo-preview" />
+                : <div className="settings-logo-empty" data-testid="status-logo-missing">No logo configured</div>}
+              <div className="settings-logo-controls">
+                <input id="settings-logo" className="input" type="file" accept="image/*" onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value='';if(!file)return;setLogoError('');void prepareLogo(file).then(dataUrl=>change('logoDataUrl',dataUrl)).catch(error=>setLogoError(error instanceof Error?error.message:'Logo upload failed.'));}} data-testid="input-restaurant-logo" />
+                {form.logoDataUrl && <button type="button" className="btn btn-sm btn-danger" onClick={()=>{change('logoDataUrl','');setLogoError('');}} data-testid="button-remove-restaurant-logo"><X size={13} /> Remove logo</button>}
+              </div>
+            </div>
+            <p className="page-subtitle">Images are resized and saved locally in this browser. Save settings to keep the logo on receipts.</p>
+            {logoError && <p className="validation" role="alert" data-testid="status-logo-error">{logoError}</p>}
+          </div>
+        </div>
+        <div className="settings-actions"><span className="page-subtitle">{saved?'Changes are saved locally when submitted.':'Unsaved changes'}</span><button className="btn btn-primary" type="submit" data-testid="button-save-settings"><Check size={14}/> Save settings</button></div>
+        <p className="page-subtitle"><Printer size={13}/> Receipt printing opens the browser print dialog; no physical printer integration is included.</p>
+      </form>
+    </div>
+  );
 }
 
 interface CartEntry { item: MenuItem; quantity: number; note: string }

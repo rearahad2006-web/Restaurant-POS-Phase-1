@@ -1,0 +1,422 @@
+# FINAL PRE-STAGE-2 UPDATE
+## Restaurant POS — Expenses, Printing, Dine-In Item Removal & Receipt Logo
+
+The existing restaurant POS is working and has already passed the acceptance workflows and Manager Panel tests.
+
+Your task is to add ONLY the features below. Do not rebuild the application, change the existing architecture unnecessarily, or add unrelated features.
+
+IMPORTANT:
+- Preserve all currently working functionality.
+- Do not add SQLite yet.
+- Do not add Windows packaging yet.
+- Do not add inventory.
+- Do not add KOT/Kitchen Display.
+- Do not add SaaS/cloud functionality.
+- Do not redesign the entire UI.
+- Keep the current Manager/Cashier permissions.
+- Keep existing order/payment records compatible.
+- Minimize changes because the remaining Replit credits are limited.
+
+---
+
+# FEATURE 1 — EXPENSES / KHARCHA
+
+Add a new Manager-only page:
+
+**Expenses**
+
+Add it to the Manager navigation.
+
+Cashiers must NOT be able to access Expenses.
+
+Managers should be able to:
+
+### Add Expense
+
+Fields:
+
+- Expense ID — automatically generated
+- Date/time — automatically generated but editable if appropriate
+- Item/Purpose
+- Category
+- Quantity
+- Unit price
+- Total amount
+- Payment method
+- Supplier/person — optional
+- Notes — optional
+- Added by
+
+Example:
+
+Flour
+Category: Grocery
+Quantity: 20 kg
+Unit Price: PKR 150
+Total: PKR 3,000
+Payment: Cash
+
+### Expense Categories
+
+Provide useful default categories such as:
+
+- Grocery
+- Raw Material
+- Gas
+- Electricity
+- Water
+- Rent
+- Salary
+- Delivery
+- Maintenance
+- Cleaning
+- Packaging
+- Other
+
+Allow the manager to select "Other".
+
+### Expense List
+
+Show:
+
+- Expense ID
+- Date
+- Item/Purpose
+- Category
+- Amount
+- Payment method
+- Added by
+- Actions
+
+Actions:
+
+- View
+- Edit
+- Delete
+
+Add filters:
+
+- Today
+- This week
+- This month
+- Custom date range
+- Category
+- Payment method
+
+Show expense totals.
+
+IMPORTANT:
+Expenses must be saved as real persistent application data using the current repository/data architecture.
+
+Do not use fake hard-coded expense data.
+
+---
+
+# FEATURE 2 — IMPROVED PRINTING / RECEIPTS
+
+Improve the existing Print/Reprint system without breaking the current browser print fallback.
+
+Current behavior:
+Print/Reprint currently invokes the browser print function.
+
+Keep that fallback working.
+
+Create a clean receipt-printing structure so that the application is ready for direct/silent Windows printing later.
+
+IMPORTANT:
+Do NOT pretend that normal browser JavaScript can silently print to an arbitrary printer.
+
+For now:
+
+- Keep browser print as fallback.
+- Make the receipt print layout clean and printer-friendly.
+- Avoid unnecessary browser UI elements in the printed receipt.
+- Ensure receipt contains correct restaurant/order/payment information.
+- Keep Print and Reprint working.
+
+The actual direct silent thermal-printer integration will be implemented later during the Windows/local Phase 2.
+
+Do not spend time implementing complicated printer hardware integration now.
+
+---
+
+# FEATURE 3 — REMOVE INDIVIDUAL ITEMS FROM DINE-IN ORDER
+
+Improve the Dine-in POS cart.
+
+The cashier/manager must be able to remove individual items from the current order before completing checkout.
+
+For example:
+
+Burger x2
+Fries x1
+Drink x2
+
+The user should be able to:
+
+- Increase quantity
+- Decrease quantity
+- Remove an item completely
+
+If quantity becomes zero, remove the item.
+
+Show:
+
+- Item
+- Quantity
+- Unit price
+- Line total
+- Remove/delete control
+
+This must work for Dine-in orders.
+
+Also make sure it works correctly for Takeaway and Delivery if the same cart component is shared.
+
+IMPORTANT:
+
+Removing an item from an unfinished cart must NOT modify previously completed orders.
+
+Previously completed orders must remain unchanged.
+
+---
+
+# FEATURE 4 — RESTAURANT LOGO ON BILL / RECEIPT
+
+Add logo management to:
+
+**Manager → Settings**
+
+The manager should be able to upload a restaurant logo.
+
+Requirements:
+
+- Upload logo
+- Preview logo
+- Replace logo
+- Remove logo
+- Save logo
+- Logo persists after page refresh
+
+Use a suitable local/browser-compatible storage approach with the current repository architecture.
+
+Do not introduce a paid image-storage service.
+
+Receipt should display:
+
+[Restaurant Logo]
+
+Restaurant Name
+Address
+Phone
+
+Then:
+
+Order information
+Order type
+Table/customer information when applicable
+Items
+Quantities
+Prices
+Subtotal
+Delivery charge when applicable
+Total
+Payment method
+Cash received/change when applicable
+Payment/reference information when applicable
+
+The logo should appear near the top of the receipt.
+
+Make sure the logo:
+
+- Does not become huge
+- Maintains aspect ratio
+- Prints clearly
+- Does not break the receipt layout
+- Is hidden when no logo has been configured
+
+The same receipt layout should be used for:
+
+- Print
+- Reprint
+- Receipt preview
+
+---
+
+# IMPORTANT DATA SAFETY
+
+Do not break existing data.
+
+Existing:
+
+- Orders
+- Payments
+- Menu
+- Tables
+- Settings
+- Users
+- Payment records
+
+must continue working.
+
+Existing completed orders must remain unchanged.
+
+Price snapshots must continue working.
+
+---
+
+# MANAGER NAVIGATION
+
+Manager navigation should now include:
+
+Dashboard
+POS
+Orders
+Payments
+Expenses
+Menu
+Tables
+Reports
+Staff
+Settings
+
+Cashier navigation should remain restricted to:
+
+POS
+Orders
+Payments
+
+Do not give Cashiers access to:
+
+Expenses
+Menu
+Tables
+Reports
+Staff
+Settings
+
+---
+
+# REPORTING
+
+Add expense information to Reports only where simple and useful.
+
+At minimum show:
+
+Total Sales
+Total Expenses
+Net Amount
+
+Formula:
+
+Net Amount = Total Sales - Total Expenses
+
+Do not build complicated accounting or profit/loss systems yet.
+
+Make sure expense totals come from saved expense records.
+
+---
+
+# TESTING REQUIREMENTS
+
+After implementation, actually test the application UI.
+
+Test these workflows:
+
+## Test 1 — Add Expense
+
+Manager:
+- Open Expenses
+- Add an expense
+- Save
+- Confirm it appears in the expense list
+- Refresh
+- Confirm it remains
+
+## Test 2 — Edit/Delete Expense
+
+- Edit an existing expense
+- Confirm updated value
+- Delete an expense
+- Confirm it is removed
+
+## Test 3 — Expense totals
+
+Add two expenses and confirm:
+
+Total Expenses = sum of saved expenses.
+
+## Test 4 — Dine-in item removal
+
+- Create Dine-in order
+- Add at least 3 different items
+- Increase quantity of one item
+- Remove one item
+- Confirm totals update correctly
+- Complete order
+- Confirm final saved order contains only remaining items
+
+## Test 5 — Completed order protection
+
+Open an already completed order and confirm its saved items/prices have NOT changed.
+
+## Test 6 — Logo
+
+Manager:
+- Open Settings
+- Upload logo
+- Save
+- Refresh
+- Confirm logo remains
+- Open receipt preview
+- Confirm logo appears
+
+## Test 7 — Receipt printing
+
+- Create a new order
+- Open receipt
+- Confirm logo and receipt information
+- Press Print
+- Confirm browser print fallback still works
+
+## Test 8 — Reprint
+
+- Open a completed order
+- Reprint
+- Confirm receipt contains the same original order information and original prices.
+
+## Test 9 — Permissions
+
+Manager:
+- Can access Expenses, Settings, Menu, Tables, Reports.
+
+Cashier:
+- Can access POS, Orders, Payments.
+- Cannot access Expenses or Settings directly.
+
+## Test 10 — Build
+
+Run:
+
+- TypeScript/type checking
+- Production build
+
+Fix any errors before finishing.
+
+---
+
+# FINAL RESPONSE
+
+When finished, report:
+
+1. Features implemented
+2. Tests passed
+3. Any bugs fixed
+4. Any remaining limitations
+5. Exact files/components changed
+6. Confirm that SQLite and Windows packaging were NOT implemented yet
+7. Confirm that the project is ready to push to GitHub for migration to the new Replit account
+
+Do not start Phase 2.
+Do not implement SQLite.
+Do not implement Windows packaging.
+Do not implement physical thermal-printer integration yet.
