@@ -39,18 +39,18 @@ A local-first Phase 1 point-of-sale app for a small family restaurant, built aro
 
 ## Product
 
-Phase 1 provides staff sign-in, a dashboard, dine-in/takeaway/delivery order creation, payment and receipt preview, dynamic table management, menu/category management, and searchable order history. Sample data is clearly marked; there is no inventory, KDS, KOT, reservations, online ordering, sync, or multi-restaurant support.
+Phase 1 provides role-aware Manager and Cashier access; a dashboard; dine-in, takeaway, and delivery checkout; separate payment records; receipt preview and reprint; menu, category, and table management; searchable orders; reports; staff accounts; and restaurant/receipt settings. Sample data is clearly marked. There is no inventory, KDS, KOT, reservations, online ordering, sync, or multi-restaurant support.
 
 ## User preferences
 
 - Keep the POS local-first and portable to a single Windows 10 restaurant computer; avoid Replit-specific storage and cloud dependencies for core billing.
-- Do not expand beyond the specified Phase 1 feature set.
+- Keep changes within the specified Phase 1 feature set; do not add the deferred local database, Windows packaging, thermal printer, inventory, kitchen display, or other Phase 2 work unless requested.
 
 ## Gotchas
 
 - Browser-local data is tied to this browser profile and is not shared, backed up, or protected from browser-data clearing.
-- Browser printing is not thermal-printer integration. Do not use this build for live restaurant operations until local SQLite persistence, backups, Windows packaging, and printer support are addressed.
-- Next step: run the seven Phase 1 acceptance workflows end-to-end; then implement the Windows local runtime with SQLite and a printer adapter.
+- Browser printing is not thermal-printer integration. Do not use this build for live restaurant operations until persistence, backups, packaging, and printer support are addressed.
+- Keep browser-local persistence for this phase; do not begin SQLite, Windows packaging, thermal printing, inventory, or kitchen-display work without an explicit request.
 
 ## Pointers
 
