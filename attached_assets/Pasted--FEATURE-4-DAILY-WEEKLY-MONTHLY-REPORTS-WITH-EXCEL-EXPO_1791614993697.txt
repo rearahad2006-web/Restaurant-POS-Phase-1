@@ -1,0 +1,113 @@
+## FEATURE 4: DAILY, WEEKLY & MONTHLY REPORTS WITH EXCEL EXPORT
+
+Improve the existing Manager Reports page to support daily, weekly, and monthly restaurant reports.
+
+IMPORTANT:
+- Reuse the existing Reports page and saved application data.
+- Do not rebuild the dashboard or redesign the entire application.
+- Do not use hard-coded or fake report data.
+- Keep this feature compatible with the existing repository/data-access architecture.
+- Do not add SQLite or Windows packaging in this task.
+- Keep the implementation lightweight because Replit credits are limited.
+
+### Report Period Selection
+
+Add report period options:
+
+- Today
+- Yesterday
+- This Week
+- Last Week
+- This Month
+- Last Month
+- Custom Date Range
+
+Allow the Manager to select a period and generate the report.
+
+Use the restaurant's local date and time consistently. Clearly display the selected reporting period.
+
+### Report Summary
+
+Show the following figures for the selected period:
+
+- Total sales from completed orders
+- Total number of completed orders
+- Total cancelled orders, shown separately
+- Total recorded expenses
+- Sales by payment method: Cash, Card, Easypaisa, JazzCash, and Other
+- Expenses by category
+- Sales by order type: Dine-in, Takeaway, and Delivery
+- Total discounts
+- Delivery charges collected
+- Average completed-order value
+- Net amount after recorded expenses
+
+Calculate:
+
+**Net Amount = Completed Sales − Recorded Expenses**
+
+Label this as **Net Amount After Recorded Expenses**, not guaranteed accounting profit. Inventory costs, unpaid bills, taxes, and other unrecorded costs are not included unless the existing system explicitly tracks them.
+
+Do not count cancelled orders as completed sales. Avoid double-counting payments or orders.
+
+### Daily Breakdown
+
+For weekly and monthly reports, include a breakdown by individual date showing:
+
+- Date
+- Completed orders
+- Sales total
+- Expenses total
+- Net amount after recorded expenses
+
+### Best-Selling Items
+
+Where the saved order data supports it, show:
+
+- Item name
+- Quantity sold
+- Sales amount
+
+Handle deal/combo orders correctly. Do not count combo contents as additional full-price sales. If reliable item-level deal sales cannot be calculated from existing data, explain that limitation instead of inventing figures.
+
+### Excel Export Preparation
+
+Add an **Export Excel (.xlsx)** button for the selected reporting period.
+
+The exported file should contain useful, organized worksheets:
+
+1. **Summary** — reporting period, sales, expenses, net amount, order counts, and discounts.
+2. **Sales** — completed order details and totals.
+3. **Payments** — saved payment records, payment methods, amounts, statuses, and references where available.
+4. **Expenses** — recorded expense details for the selected period.
+5. **Daily Breakdown** — daily sales, expenses, order counts, and net amounts.
+6. **Items Sold** — item quantities and sales totals where reliably available.
+
+Requirements:
+- Use actual saved data.
+- Apply the selected reporting period to the exported data.
+- Use clear column headers.
+- Format monetary values as PKR.
+- Use sensible worksheet names and readable column widths.
+- Include the restaurant name and report period in the Summary worksheet when available.
+- Generate and download a real Excel `.xlsx` file, not a renamed CSV or HTML file.
+- Use a compatible lightweight Excel library if one is not already available.
+- Do not add an external paid reporting service.
+
+Also prepare the report calculations and export code so they can later work with the SQLite repository in Stage 2. Keep report calculation logic separate from UI components where practical.
+
+### Testing
+
+1. Generate a daily report and verify its figures against saved completed orders, payments, and expenses.
+2. Generate a weekly report and verify its date range and daily breakdown.
+3. Generate a monthly report and verify its date range and daily breakdown.
+4. Test a custom date range.
+5. Confirm cancelled orders are not included in completed sales.
+6. Confirm expenses are counted once.
+7. Confirm payment totals are not double-counted.
+8. Export an Excel file and verify that it opens as a valid `.xlsx` workbook with the expected worksheets.
+9. Verify the exported figures match the on-screen report.
+10. Confirm old orders and records remain unchanged.
+11. Run TypeScript checking and the production build.
+
+Do not claim any test passed unless it was actually performed.

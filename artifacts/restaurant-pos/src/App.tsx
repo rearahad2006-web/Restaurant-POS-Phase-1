@@ -4,6 +4,17 @@ import { LayoutDashboard, ShoppingCart, UtensilsCrossed, Armchair, ClipboardList
 import { AppData, Category, Expense, MenuItem, Order, OrderItem, OrderType, PaymentMethod, Payment, Table, UserRole, money, makeId, now } from './domain';
 import { repository } from './storage/repository';
 import { printReceipt } from './services/printing';
+import { downloadReportWorkbook } from './reporting/export-xlsx';
+import {
+  calculateReport,
+  formatLocalDateKey,
+  localDateKey,
+  REPORT_ORDER_TYPES,
+  REPORT_PAYMENT_METHODS,
+  REPORT_PERIOD_OPTIONS,
+  resolveReportDateRange,
+  type ReportPeriod,
+} from './reporting/report-calculations';
 
 interface Store { data: AppData; setData: (updater: (data: AppData) => AppData) => void; user: AppData['users'][number] | null; setUser: (user: AppData['users'][number] | null) => void; draftTableId: string | null; setDraftTableId: (id: string | null) => void; toast: (message: string) => void }
 const StoreContext = createContext<Store | null>(null);
@@ -593,37 +604,311 @@ function periodStart(period: string) {
 }
 
 function ReportsPage() {
-  const { data } = useStore();
-  const [period,setPeriod] = useState('today');
-  const [reportDay,setReportDay] = useState(new Date().toISOString().slice(0,10));
-  const [method,setMethod] = useState('all');
-  const [type,setType] = useState('all');
-  const start = period === 'day' ? new Date(`${reportDay}T00:00:00`).getTime() : periodStart(period);
-  const end = period === 'day' ? start + 86400000 : period === 'today' ? new Date(new Date().setHours(24,0,0,0)).getTime() : Infinity;
-  const inRange = (value:string) => { const time = new Date(value).getTime(); return time >= start && time < end; };
-  const orders = data.orders.filter(order => inRange(order.createdAt) && (type === 'all' || order.type === type) && (method === 'all' || data.payments.some(payment => payment.orderId === order.id && payment.method === method)));
-  const completed = orders.filter(order => order.status === 'paid');
-  const cancelled = orders.filter(order => order.status === 'cancelled');
-  const paymentRows = data.payments.filter(payment => inRange(payment.dateTime) && (method === 'all' || payment.method === method)).filter(payment => {
-    const order = data.orders.find(item => item.id === payment.orderId);
-    return !!order && order.status === 'paid' && (type === 'all' || order.type === type);
-  });
-  const total = paymentRows.reduce((sum,payment)=>sum+payment.amount,0);
-  const expenseRows = data.expenses.filter(expense => inRange(expense.dateTime));
-  const totalExpenses = expenseRows.reduce((sum, expense) => sum + expense.total, 0);
-  const netAmount = total - totalExpenses;
-  const salesByType = (orderType: OrderType) => paymentRows.reduce((sum,payment) => {
-    return sum + (data.orders.find(order => order.id === payment.orderId)?.type === orderType ? payment.amount : 0);
-  }, 0);
-  const products = new Map<string,{name:string;quantity:number;revenue:number}>();
-  completed.forEach(order=>order.items.forEach(item=>{const old=products.get(item.menuItemId) || {name:item.name,quantity:0,revenue:0}; old.quantity+=item.quantity;old.revenue+=item.lineTotal;products.set(item.menuItemId,old);}));
-  const best=[...products.values()].sort((a,b)=>b.quantity-a.quantity).slice(0,8);
-  return <div className="page"><PageHeader eyebrow="SERVICE PERFORMANCE" title="Reports." subtitle="Sales honor the selected method and order-type filters; expenses use the selected date period. Cancelled sales are excluded." />
-    <div className="toolbar"><select className="select filter-select" value={period} onChange={event=>setPeriod(event.target.value)} aria-label="Report period"><option value="today">Today</option><option value="day">Choose day</option><option value="week">This week</option><option value="month">This month</option></select>{period==='day'&&<input className="input filter-select" type="date" value={reportDay} onChange={event=>setReportDay(event.target.value)} aria-label="Select report day"/>}<select className="select filter-select" value={method} onChange={event=>setMethod(event.target.value)} aria-label="Report payment method"><option value="all">All payment methods</option>{(['Cash','Card','Easypaisa','JazzCash','Other'] as PaymentMethod[]).map(value=><option key={value}>{value}</option>)}</select><select className="select filter-select" value={type} onChange={event=>setType(event.target.value)} aria-label="Report order type"><option value="all">All order types</option><option>Dine-in</option><option>Takeaway</option><option>Delivery</option></select></div>
-    <div className="stat-grid"><Stat label="Total sales" value={money(total,currency(data))} foot={`${paymentRows.length} saved payments`} icon={<CircleDollarSign/>}/><Stat label="Total expenses" value={money(totalExpenses,currency(data))} foot={`${expenseRows.length} saved expenses · selected period`} icon={<ReceiptText/>}/><Stat label="Net amount" value={money(netAmount,currency(data))} foot="Total sales minus total expenses" icon={<Banknote/>}/><Stat label="Completed" value={String(completed.length)} foot="Paid orders in period" icon={<Check/>}/><Stat label="Cancelled" value={String(cancelled.length)} foot="Cancelled orders in period" icon={<X/>}/><Stat label="Avg. completed" value={money(completed.length ? total/completed.length : 0,currency(data))} foot="Collected / completed tickets" icon={<BarChart3/>}/></div>
-    <div className="dash-grid"><section className="panel"><div className="panel-head"><div><div className="eyebrow">PAYMENT METHOD</div><h2 className="panel-title">Collected by method</h2></div></div><div className="report-breakdown">{(['Cash','Card','Easypaisa','JazzCash','Other'] as PaymentMethod[]).map(paymentMethod=>{const amount=paymentRows.filter(row=>row.method===paymentMethod).reduce((sum,row)=>sum+row.amount,0);return <div className="break-row" key={paymentMethod}><span>{paymentMethod}</span><b>{money(amount,currency(data))}</b></div>})}</div></section><section className="panel"><div className="panel-head"><div><div className="eyebrow">ORDER TYPE</div><h2 className="panel-title">Sales by order type</h2></div></div><div className="report-breakdown">{(['Dine-in','Takeaway','Delivery'] as OrderType[]).map(value=><div className="break-row" key={value}><span>{value}<small> · {completed.filter(order=>order.type===value).length} orders</small></span><b>{money(salesByType(value),currency(data))}</b></div>)}</div></section></div>
-    <section className="panel" style={{marginTop:16}}><div className="panel-head"><div><div className="eyebrow">ITEM SNAPSHOTS</div><h2 className="panel-title">Best-selling items</h2></div><span className="badge">{best.length} items</span></div>{best.length?<div className="table-wrap"><table className="data-table"><thead><tr><th>Rank</th><th>Item</th><th>Units sold</th><th>Item revenue</th></tr></thead><tbody>{best.map((item,index)=><tr key={`${item.name}-${index}`}><td className="mono">{String(index+1).padStart(2,'0')}</td><td>{item.name}</td><td>{item.quantity}</td><td className="mono">{money(item.revenue,currency(data))}</td></tr>)}</tbody></table></div>:<Empty title="No completed items in this period" description="Best sellers will appear after completed tickets are recorded." icon={<Salad size={20}/>} />}</section>
-  </div>;
+  const { data, toast } = useStore();
+  const todayKey = localDateKey(new Date());
+  const [period, setPeriod] = useState<ReportPeriod>('today');
+  const [customStart, setCustomStart] = useState(todayKey);
+  const [customEnd, setCustomEnd] = useState(todayKey);
+  const [method, setMethod] = useState<PaymentMethod | 'all'>('all');
+  const [type, setType] = useState<OrderType | 'all'>('all');
+  const [periodError, setPeriodError] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const [applied, setApplied] = useState(() => ({
+    period: 'today' as ReportPeriod,
+    anchorDate: todayKey,
+    startDate: todayKey,
+    endDate: todayKey,
+    paymentMethod: 'all' as PaymentMethod | 'all',
+    orderType: 'all' as OrderType | 'all',
+  }));
+
+  const range = useMemo(
+    () => resolveReportDateRange(
+      applied.period,
+      new Date(`${applied.anchorDate}T12:00:00`),
+      applied.startDate,
+      applied.endDate,
+    ),
+    [applied],
+  );
+  const report = useMemo(
+    () => calculateReport(data, range, {
+      paymentMethod: applied.paymentMethod,
+      orderType: applied.orderType,
+    }),
+    [data, range, applied.paymentMethod, applied.orderType],
+  );
+
+  const generateReport = () => {
+    const anchorDate = new Date();
+    try {
+      resolveReportDateRange(period, anchorDate, customStart, customEnd);
+      setApplied({
+        period,
+        anchorDate: localDateKey(anchorDate),
+        startDate: customStart,
+        endDate: customEnd,
+        paymentMethod: method,
+        orderType: type,
+      });
+      setPeriodError('');
+    } catch (error) {
+      setPeriodError(error instanceof Error ? error.message : 'Choose a valid reporting period.');
+    }
+  };
+
+  const exportExcel = async () => {
+    setExporting(true);
+    try {
+      await downloadReportWorkbook(report, data.settings);
+      toast('Excel report downloaded.');
+    } catch (error) {
+      console.error('Excel report export failed:', error);
+      toast('The Excel report could not be created. Try again in this browser.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const best = report.itemsSold.slice(0, 8);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'register local time';
+
+  return (
+    <div className="page">
+      <PageHeader
+        eyebrow="SERVICE PERFORMANCE"
+        title="Reports."
+        subtitle="Review completed sales, saved expenses and daily performance for a selected period."
+      />
+      <div className="toolbar report-toolbar">
+        <div className="field report-control">
+          <label htmlFor="report-period">Reporting period</label>
+          <select
+            id="report-period"
+            className="select"
+            value={period}
+            onChange={event => { setPeriod(event.target.value as ReportPeriod); setPeriodError(''); }}
+            aria-label="Report period"
+            data-testid="select-report-period"
+          >
+            {REPORT_PERIOD_OPTIONS.map(option => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </div>
+        {period === 'custom' && (
+          <>
+            <div className="field report-control">
+              <label htmlFor="report-custom-start">Start date</label>
+              <input
+                id="report-custom-start"
+                className="input"
+                type="date"
+                value={customStart}
+                onChange={event => { setCustomStart(event.target.value); setPeriodError(''); }}
+                data-testid="input-report-start"
+              />
+            </div>
+            <div className="field report-control">
+              <label htmlFor="report-custom-end">End date</label>
+              <input
+                id="report-custom-end"
+                className="input"
+                type="date"
+                value={customEnd}
+                onChange={event => { setCustomEnd(event.target.value); setPeriodError(''); }}
+                data-testid="input-report-end"
+              />
+            </div>
+          </>
+        )}
+        <div className="field report-control">
+          <label htmlFor="report-method">Payment method</label>
+          <select
+            id="report-method"
+            className="select"
+            value={method}
+            onChange={event => setMethod(event.target.value as PaymentMethod | 'all')}
+            aria-label="Report payment method"
+            data-testid="filter-report-method"
+          >
+            <option value="all">All methods</option>
+            {REPORT_PAYMENT_METHODS.map(value => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </div>
+        <div className="field report-control">
+          <label htmlFor="report-type">Order type</label>
+          <select
+            id="report-type"
+            className="select"
+            value={type}
+            onChange={event => setType(event.target.value as OrderType | 'all')}
+            aria-label="Report order type"
+            data-testid="filter-report-type"
+          >
+            <option value="all">All types</option>
+            {REPORT_ORDER_TYPES.map(value => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </div>
+        <button className="btn btn-primary" onClick={generateReport} data-testid="button-generate-report">
+          <CalendarDays size={15} /> Generate report
+        </button>
+        <button
+          className="btn"
+          onClick={exportExcel}
+          disabled={exporting}
+          data-testid="button-export-report-excel"
+        >
+          <FileText size={15} /> {exporting ? 'Creating Excel…' : 'Export Excel (.xlsx)'}
+        </button>
+      </div>
+      {periodError && <p className="validation" role="alert" data-testid="report-period-error">{periodError}</p>}
+      <div className="report-period-summary" data-testid="report-period-summary">
+        <div>
+          <span className="eyebrow">REPORTING PERIOD</span>
+          <strong>{report.range.label}</strong>
+        </div>
+        <span className="report-local-time">Register local time · {timezone}</span>
+      </div>
+
+      <div className="stat-grid report-stat-grid">
+        <Stat label="Total sales" value={money(report.totals.sales, currency(data))} foot="Completed order totals" icon={<CircleDollarSign />} />
+        <Stat label="Completed orders" value={String(report.totals.completedOrders)} foot="Cancelled tickets excluded from sales" icon={<Check />} />
+        <Stat label="Cancelled orders" value={String(report.totals.cancelledOrders)} foot="Shown separately, not counted as sales" icon={<X />} />
+        <Stat label="Total expenses" value={money(report.totals.expenses, currency(data))} foot={`${report.expenses.length} recorded expenses`} icon={<ReceiptText />} />
+        <Stat label="Net amount after recorded expenses" value={money(report.totals.netAmount, currency(data))} foot="Completed sales minus recorded expenses" icon={<Banknote />} />
+        <Stat label="Total discounts" value={money(report.totals.discounts, currency(data))} foot="Completed orders only" icon={<CircleHelp />} />
+        <Stat label="Delivery charges collected" value={money(report.totals.deliveryCharges, currency(data))} foot="Included in order sales totals" icon={<MapPin />} />
+        <Stat label="Average completed-order value" value={money(report.totals.averageOrderValue, currency(data))} foot="Completed sales divided by completed orders" icon={<BarChart3 />} />
+      </div>
+
+      <div className="dash-grid">
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="eyebrow">PAYMENT METHOD</div>
+              <h2 className="panel-title">Sales by payment method</h2>
+            </div>
+          </div>
+          <div className="report-breakdown">
+            {report.salesByPaymentMethod.map(row => (
+              <div className="break-row" key={row.method}>
+                <span>{row.method}</span>
+                <b>{money(row.amount, currency(data))}</b>
+              </div>
+            ))}
+          </div>
+          <p className="report-footnote">Payment totals use saved paid payment records and are not added a second time to sales.</p>
+        </section>
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="eyebrow">ORDER TYPE</div>
+              <h2 className="panel-title">Sales by order type</h2>
+            </div>
+          </div>
+          <div className="report-breakdown">
+            {report.salesByOrderType.map(row => (
+              <div className="break-row" key={row.type}>
+                <span>{row.type}<small> · {row.orderCount} orders</small></span>
+                <b>{money(row.amount, currency(data))}</b>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <div className="dash-grid report-secondary-grid">
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="eyebrow">RECORDED SPEND</div>
+              <h2 className="panel-title">Expenses by category</h2>
+            </div>
+            <span className="badge">{report.expensesByCategory.length} categories</span>
+          </div>
+          {report.expensesByCategory.length ? (
+            <div className="report-breakdown">
+              {report.expensesByCategory.map(row => (
+                <div className="break-row" key={row.category}>
+                  <span>{row.category}</span>
+                  <b>{money(row.amount, currency(data))}</b>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Empty title="No recorded expenses" description="Expenses entered for this period will appear here." icon={<ReceiptText size={20} />} />
+          )}
+        </section>
+        <section className="panel report-net-note">
+          <div className="eyebrow">HOW TO READ THIS FIGURE</div>
+          <h2 className="panel-title">Net Amount After Recorded Expenses</h2>
+          <p>{'Completed sales − recorded expenses.'}</p>
+          <p className="report-footnote">This is not guaranteed accounting profit. Inventory costs, unpaid bills, taxes and other costs not recorded in this register are excluded.</p>
+        </section>
+      </div>
+
+      <section className="panel report-table-panel">
+        <div className="panel-head">
+          <div>
+            <div className="eyebrow">DATE-BY-DATE</div>
+            <h2 className="panel-title">Daily breakdown</h2>
+          </div>
+          <span className="badge">{report.dailyBreakdown.length} days</span>
+        </div>
+        <div className="table-wrap">
+          <table className="data-table" data-testid="table-report-daily">
+            <thead>
+              <tr><th>Date</th><th>Completed orders</th><th>Sales total</th><th>Expenses total</th><th>Net amount after recorded expenses</th></tr>
+            </thead>
+            <tbody>
+              {report.dailyBreakdown.map(row => (
+                <tr key={row.date}>
+                  <td>{formatLocalDateKey(row.date)}</td>
+                  <td>{row.completedOrders}</td>
+                  <td className="mono">{money(row.sales, currency(data))}</td>
+                  <td className="mono">{money(row.expenses, currency(data))}</td>
+                  <td className="mono">{money(row.netAmount, currency(data))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel report-table-panel">
+        <div className="panel-head">
+          <div>
+            <div className="eyebrow">SAVED ORDER-LINE SNAPSHOTS</div>
+            <h2 className="panel-title">Best-selling items</h2>
+          </div>
+          <span className="badge">{report.itemsSold.length} items in export</span>
+        </div>
+        {best.length ? (
+          <>
+            <div className="table-wrap">
+              <table className="data-table" data-testid="table-report-items">
+                <thead><tr><th>Rank</th><th>Item</th><th>Quantity sold</th><th>Sales amount</th></tr></thead>
+                <tbody>
+                  {best.map((item, index) => (
+                    <tr key={`${item.menuItemId}-${item.name}`}>
+                      <td className="mono">{String(index + 1).padStart(2, '0')}</td>
+                      <td>{item.name}</td>
+                      <td>{item.quantity}</td>
+                      <td className="mono">{money(item.sales, currency(data))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="report-footnote">{'Sales are saved line totals before any order-level discount allocation. Combo contents are shown only as their saved order line because individual contents are not stored.'}</p>
+          </>
+        ) : (
+          <Empty title="No completed items in this period" description="Best sellers will appear after completed tickets are recorded." icon={<Salad size={20} />} />
+        )}
+      </section>
+    </div>
+  );
 }
 
 function StaffPage() {
