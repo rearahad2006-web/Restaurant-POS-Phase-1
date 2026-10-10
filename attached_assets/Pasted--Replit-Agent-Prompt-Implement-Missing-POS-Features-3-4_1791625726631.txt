@@ -1,0 +1,258 @@
+# Replit Agent Prompt — Implement Missing POS Features 3, 4 & 5 Only
+
+## Objective
+
+The existing Restaurant POS and Reports/Excel Export work is already in the project. However, these three features from the previous prompt were not implemented:
+
+1. Deals / Combo Offers
+2. Separate Kitchen Order Tokens
+3. Manual Quantity Entry in the POS
+
+**Implement these three features in the EXISTING project now. Do not work on Reports or Excel Export again.**
+
+## CRITICAL RULES — SAVE CREDITS
+
+- Do not rebuild the application.
+- Do not redesign existing screens.
+- Do not change working Reports, Excel Export, Orders, Payments, Expenses, Menu, Tables, Settings, Staff, or customer receipts unnecessarily.
+- Inspect only the relevant existing files before making changes.
+- Reuse existing components, data types, storage/repository functions, authorization, and print utilities.
+- Make minimal, targeted changes.
+- Do not create duplicate pages or duplicate functionality.
+- Preserve existing saved orders and backward compatibility.
+- Keep the application runnable.
+- Implement the features, not just describe a plan.
+- Do not start Stage 2.
+- Do not add SQLite, Windows packaging, cloud services, inventory management, a full kitchen display system, or silent thermal printing.
+
+---
+
+## FEATURE 1 — DEALS / COMBO OFFERS
+
+### A. Manager Deals page
+
+Add a **Deals** page to the existing Manager Panel.
+
+Managers must be able to:
+
+- View existing deals.
+- Create a deal.
+- Edit a deal.
+- Activate or deactivate a deal.
+- Delete a deal, with sensible confirmation if needed.
+
+Each deal must support:
+
+- Unique ID
+- Deal name
+- Optional description
+- One or more existing menu items
+- Quantity required for each included item
+- Fixed deal price in PKR
+- Active/inactive status
+
+Example:
+
+**Rice & Drink Combo**
+- Chicken rice × 1
+- Cold drink × 1
+- Deal price: PKR 500
+
+Use the existing menu items and their IDs. Do not create duplicate menu products.
+
+Persist deals through the project's existing storage/repository approach so they remain available after refreshing the page.
+
+### B. POS integration
+
+Add a clear **Deals / Combos** section to the existing POS.
+
+- Show only active deals to cashiers.
+- Display the deal name, included items, quantities, and fixed price.
+- Allow the cashier to add a deal to the current cart.
+- Allow increasing, decreasing, manually editing, and removing a deal's quantity.
+- Recalculate the cart totals correctly.
+- Keep ordinary menu items and deal entries separate in the cart.
+
+**Pricing must be correct:**
+
+- A combo is charged at its fixed deal price.
+- Do not additionally charge the individual menu prices for the components included in that combo.
+- If a customer orders an included item separately, charge that separate item normally.
+- Changing the quantity of a deal must update its total correctly.
+- Preserve existing discounts, delivery charges, and order-type behavior.
+
+### C. Save deal snapshots in completed orders
+
+When an order is completed, save the information needed to reproduce the original deal on historical orders and receipts:
+
+- Deal name
+- Included item names
+- Included item quantities
+- Quantity of deals purchased
+- Fixed deal price per deal
+- Total deal price
+
+Editing or deleting a deal later must not change completed orders, old receipts, or historical sales.
+
+Keep older orders compatible if they do not contain deal information. Do not erase or reset existing saved orders.
+
+### D. Permissions
+
+- Managers can create, edit, activate/deactivate, and delete deals.
+- Cashiers can view and select active deals in the POS.
+- Cashiers cannot access deal-management pages or actions.
+- Use the existing role checks and protected-route approach.
+- Do not rely on hiding a navigation link alone; protect the actual management route/actions too.
+
+---
+
+## FEATURE 2 — SEPARATE KITCHEN ORDER TOKEN
+
+Add a **Print Kitchen Token** action to the existing order/receipt interface.
+
+This is a compact kitchen preparation slip, separate from the customer's financial receipt.
+
+### A. Kitchen token contents
+
+Include:
+
+- Restaurant name
+- Restaurant logo, if configured
+- Large, clear order number
+- Order date and time
+- Order type: Dine-in, Takeaway, or Delivery
+- Table name/number for dine-in orders
+- Customer name and delivery details when applicable
+- Item names and quantities
+- Item notes and order notes, if present
+- Deal name and included items/quantities
+- Special preparation instructions, if present
+
+Do not include prices, grand totals, or payment details on the kitchen token unless required by an existing application rule.
+
+### B. Printing behavior
+
+- Add a clearly labelled **Print Kitchen Token** button/action.
+- Support printing tokens for newly completed orders and existing orders where saved data is available.
+- Reuse the existing browser-print approach and project print utilities.
+- Provide a compact layout suitable for a small receipt printer.
+- Ensure the token prints the selected order, not another order or the current cart accidentally.
+- Trigger the browser print workflow only once per button action.
+- Make sure kitchen token content does not alter customer receipt totals.
+- Keep the customer receipt and kitchen token as separate print views.
+- Do not claim silent printing works.
+- The normal browser print dialog must work without a physical printer attached.
+
+Do not build a full kitchen display system or implement direct thermal printer integration.
+
+---
+
+## FEATURE 3 — MANUAL QUANTITY ENTRY
+
+Improve the existing POS cart quantity controls.
+
+Keep the existing plus (+), minus (−), and remove-item buttons.
+
+### Required behavior
+
+The cashier must be able to click the quantity number, type a new quantity, and press Enter or move focus away to apply it.
+
+Example:
+
+- Current quantity: 2
+- Cashier types 15
+- Presses Enter
+- Quantity becomes 15
+- Line total and order totals update immediately
+
+Requirements:
+
+- Accept positive whole-number quantities only.
+- Support normal menu items and deals.
+- Support Dine-in, Takeaway, and Delivery.
+- Recalculate line totals, subtotal, discounts, delivery charges where applicable, and grand total.
+- Keep remove-item functionality working.
+- Do not submit or complete the order accidentally when Enter is pressed in the quantity field.
+
+### Validation
+
+- Reject zero, negative numbers, decimals, and non-numeric entries.
+- Allow the field to be temporarily empty while the cashier is editing it.
+- Do not remove an item merely because the field is temporarily empty.
+- When invalid input is committed, restore the previous valid quantity and show a small, clear validation message if appropriate.
+- Prevent invalid quantities from entering the saved order.
+- Never modify completed orders when the cashier edits the current cart.
+
+---
+
+## TESTING — REQUIRED
+
+After implementation, test these scenarios using the existing test setup where possible.
+
+### Deals
+
+1. Manager can create a deal using existing menu items.
+2. Manager can edit and activate/deactivate deals.
+3. Manager can delete a deal without corrupting historical orders.
+4. Cashier can see active deals and add them to the POS cart.
+5. Inactive deals do not appear as selectable deals.
+6. Deal uses its fixed price without double-charging included items.
+7. Separately ordered menu items retain their normal prices.
+8. Deal quantity can be increased, decreased, manually edited, and removed.
+9. Completed order and receipt preserve the original deal snapshot after the deal is edited.
+10. Cashier cannot access deal-management routes or actions.
+
+### Kitchen Tokens
+
+11. Token shows the correct order number, date/time, order type, and table/customer details.
+12. Token shows the correct item quantities, deal contents, and saved notes.
+13. Token is separate from the customer receipt.
+14. Customer receipt totals remain correct.
+15. Print Kitchen Token invokes the browser print workflow once per action.
+
+### Manual Quantity Entry
+
+16. Cashier can change quantity from 2 to 15 using direct keyboard entry.
+17. Plus and minus buttons still work.
+18. Invalid input restores the previous valid quantity.
+19. A temporarily empty field does not remove the item.
+20. Quantities update totals correctly for all three order types.
+21. Manual deal quantity entry works correctly.
+22. Existing cart removal and order completion still work.
+
+### Build verification
+
+23. Run the relevant focused tests.
+24. Run TypeScript/type checking.
+25. Run the production build.
+26. Fix errors introduced by these changes.
+
+Do not mark tests as passed unless they were actually performed.
+
+## IMPLEMENTATION INSTRUCTIONS
+
+1. Inspect the existing cart model, order model, menu types, role checks, receipt printing, and storage/repository approach.
+2. Briefly identify why the three features are missing.
+3. Implement Deals and ensure persistence and permissions.
+4. Integrate deals into the cart and save historical deal snapshots.
+5. Add manual quantity editing for normal items and deals.
+6. Add the separate kitchen token print view/action.
+7. Run the focused tests, type check, and production build.
+8. Leave the Reports and Excel Export implementation untouched unless a minimal compatibility fix is absolutely required.
+
+If a feature already partially exists, finish the missing part instead of replacing it. If credits run out, leave the project runnable and clearly state what remains unfinished.
+
+## FINAL RESPONSE
+
+Report:
+
+- Deals implementation status
+- Kitchen token implementation status
+- Manual quantity entry implementation status
+- Files changed
+- Tests actually performed and results
+- TypeScript/type-check result
+- Production build result
+- Any remaining issues
+
+**Do not start Stage 2. Do not rebuild the app. Implement only these three missing features.**

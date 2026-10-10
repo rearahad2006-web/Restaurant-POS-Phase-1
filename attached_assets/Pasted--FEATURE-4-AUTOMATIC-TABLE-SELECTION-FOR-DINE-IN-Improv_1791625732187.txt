@@ -1,0 +1,41 @@
+## FEATURE 4 — AUTOMATIC TABLE SELECTION FOR DINE-IN
+
+Improve the existing Dine-in order flow so tables are selected automatically, one by one, without requiring the cashier to choose a table manually every time.
+
+### Required behavior
+
+1. When the cashier selects **Dine-in**, automatically select the first available table.
+2. When the cashier starts a new Dine-in order after the previous table has been assigned, automatically select the next available table in sequence (for example: Table 1, Table 2, Table 3, and so on).
+3. Use the actual tables configured in the existing Manager Panel. Do not create duplicate or fake tables.
+4. If a table is already occupied by an active Dine-in order, skip it and select the next available table.
+5. Clearly display the automatically selected table on the POS screen before the order is completed.
+6. Allow the cashier to change the selected table manually if the customer wants a different table.
+7. When switching from Dine-in to Takeaway or Delivery, clear the Dine-in table selection where appropriate.
+8. When switching back to Dine-in, select an available table automatically.
+9. If no available tables exist, show a clear message and allow the manager/cashier to add or free tables using the existing table-management workflow. Do not assign an occupied table automatically.
+10. Ensure the selected table is saved with the correct order and appears on the customer receipt and kitchen token.
+11. Keep existing table management, order history, permissions, and completed orders working.
+12. Avoid changing unrelated screens or rebuilding the application.
+
+### Important table-selection rules
+
+- Reuse the existing table status and order-assignment logic.
+- Do not mark a table as occupied permanently just because it was selected for an unfinished cart.
+- Confirm or reserve the table using the existing order workflow, at the appropriate time.
+- Prevent two active orders from being automatically assigned to the same occupied table.
+- If the existing app has no reliable way to determine whether a table is occupied, inspect the current order and table models and implement the smallest compatible solution.
+- Do not assume table numbers are continuous; use the actual configured table list and a sensible ordering.
+- Preserve compatibility with existing saved orders.
+
+### Required tests
+
+1. Selecting Dine-in automatically selects the first available configured table.
+2. Starting another Dine-in order selects the next available table.
+3. Occupied tables are skipped.
+4. Cashier can manually change the selected table.
+5. Switching order types clears or restores the table selection correctly.
+6. No available tables produces a clear message instead of assigning an occupied table.
+7. The correct table is saved on the order and shown on its receipt and kitchen token.
+8. Existing table management and completed orders still work.
+
+Do not start Stage 2. Implement this feature in the existing project with minimal changes.

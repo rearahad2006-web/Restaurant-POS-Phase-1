@@ -1,0 +1,485 @@
+# Replit Agent Prompt — Complete Reports, Excel Export, Deals, Kitchen Tokens & Manual Quantity Entry
+
+## PROJECT CONTEXT
+
+The existing Restaurant POS application is already working. Extend the current project with the features specified below.
+
+**Your priority is to finish and verify these features before beginning Stage 2.**
+
+### CRITICAL RULES — SAVE REPLIT CREDITS
+
+- Do NOT rebuild the application from scratch.
+- Do NOT redesign existing screens or change the established visual style.
+- Inspect the existing implementation before editing.
+- Identify which requested features already exist and implement only missing or incomplete functionality.
+- Make small, targeted changes and reuse existing components, types, utilities, repositories, and dependencies.
+- Preserve all existing orders, payments, menu items, tables, expenses, settings, staff, permissions, and receipt functionality.
+- Preserve backward compatibility with previously saved orders and records.
+- Reuse existing dependencies whenever possible. Add a lightweight dependency only when genuinely required.
+- Do not spend credits producing a long plan or repeatedly inspecting unrelated files. Inspect the relevant code, then implement and test the work.
+- Do not create duplicate pages or duplicate features that already work.
+- Do not add SQLite, Windows packaging, cloud services, inventory management, a full kitchen display system, or silent thermal printing in this task.
+- Keep the application runnable after every significant change.
+- If the available credits or environment prevent completion, report exactly what remains unfinished. Never claim unperformed work or tests succeeded.
+
+## FEATURE 1 — COMPLETE REPORTS DASHBOARD
+
+Improve the existing Manager Panel Reports page. Keep the current architecture and integrate with the existing orders, payments, and expenses repositories.
+
+### 1. Reporting period selector
+
+Provide these options:
+
+- Today
+- Yesterday
+- This Week
+- Last Week
+- This Month
+- Last Month
+- Custom Date Range
+
+For Custom Date Range, allow the manager to select a start date and end date.
+
+Requirements:
+
+- Use the application's local date and time consistently.
+- Use clear, inclusive date boundaries so transactions at the beginning or end of the selected period are not accidentally omitted.
+- Handle week boundaries consistently, using the existing project convention if one exists.
+- Validate custom date ranges.
+- Update every report summary, chart/table, and export when the selected period changes.
+
+### 2. Summary cards
+
+Display these values for the selected period:
+
+- Completed Sales
+- Completed Order Count
+- Cancelled Order Count
+- Recorded Expenses
+- Net Amount After Recorded Expenses
+- Discounts
+- Delivery Charges Collected
+- Average Completed-Order Value
+
+Use this formula:
+
+**Net Amount After Recorded Expenses = Completed Sales − Recorded Expenses**
+
+Label this metric exactly or equivalently as **Net Amount After Recorded Expenses**. Do not call it accounting profit because costs such as inventory, taxes, and other unrecorded costs may not be included.
+
+Calculation rules:
+
+- Exclude cancelled orders from completed sales and completed-order totals.
+- Show cancellation counts separately.
+- Do not double-count payments and orders. Determine the source of truth from the existing data model and use it consistently.
+- Avoid counting the same expense or payment more than once.
+- Use the existing order and payment status rules.
+- Handle refunds or partial payments according to the existing data model; do not invent unsupported behavior.
+- Use sensible zero values when a period has no records.
+- Display money consistently in PKR.
+
+### 3. Sales breakdowns
+
+Include:
+
+**Sales by Payment Method**
+- Cash
+- Card
+- Easypaisa
+- JazzCash
+- Other
+
+Use the actual saved payment records and existing payment methods. Do not fabricate values for methods that have no transactions.
+
+**Sales by Order Type**
+- Dine-in
+- Takeaway
+- Delivery
+
+**Expenses by Category**
+
+Use the categories that actually exist in the expense system. Include categories such as Grocery, Raw Material, Gas, Electricity, Water, Rent, Salary, Delivery, Maintenance, Cleaning, Packaging, and Other where supported.
+
+**Daily Breakdown**
+
+For every date in the selected period, display:
+
+- Date
+- Completed Order Count
+- Completed Sales
+- Recorded Expenses
+- Net Amount After Recorded Expenses
+
+Daily net amount must equal that date's completed sales minus that date's recorded expenses.
+
+### 4. Best-selling items
+
+Add a best-selling items section where reliable item snapshots and quantities are available.
+
+Display item name, quantity sold, and sales amount when the stored data supports accurate calculation.
+
+Rules:
+
+- Prefer saved order-item snapshots so later menu edits do not change historical reports.
+- Exclude cancelled orders from completed sales/item totals.
+- Avoid counting combo components as independently sold items if that would double-count the fixed combo price.
+- If reliable deal-level reporting cannot be implemented without changing historical records, show deal sales separately or clearly document the limitation.
+- Do not invent missing historical quantities or prices.
+
+### 5. Report usability
+
+- Keep the current design and responsive behavior.
+- Add clear headings and readable tables/cards.
+- Provide a loading, empty, or error state where appropriate.
+- Ensure the report recalculates correctly when the period changes.
+- Use shared, testable calculation functions rather than duplicating calculations across the UI and export code.
+
+---
+
+## FEATURE 2 — REAL EXCEL EXPORT (.XLSX)
+
+Add an **Export to Excel** action to the Reports page.
+
+It must download a genuine, valid `.xlsx` workbook—not a renamed CSV, HTML file, or plain-text file.
+
+Use an existing spreadsheet library if available. Otherwise, add a lightweight, compatible Excel library only if necessary.
+
+### Export rules
+
+- Export the currently selected period, including custom date ranges.
+- Use actual saved data and the same calculation functions as the on-screen reports.
+- Make the exported figures match the displayed report.
+- Include the restaurant name if available and the selected reporting period.
+- Use readable column headings and consistent date formatting.
+- Format monetary values in PKR.
+- Generate a useful filename, such as `Restaurant-Report-2026-10-10.xlsx`.
+- Ensure the download action produces a valid file with real workbook sheets.
+- Handle empty periods without crashing.
+
+### Required workbook sheets
+
+Create these six worksheets:
+
+**1. Summary**
+- Restaurant name
+- Selected period
+- Completed sales
+- Completed order count
+- Cancelled order count
+- Recorded expenses
+- Net amount after recorded expenses
+- Discounts
+- Delivery charges collected
+- Average completed-order value
+- Sales by payment method
+- Sales by order type
+- Expenses by category
+
+**2. Sales**
+- Relevant order details, such as order number, date/time, order type, status, subtotal, discount, delivery charge, total, and payment information where available.
+- Exclude cancelled orders from completed sales figures, but cancellation records may be included with their status clearly marked if useful.
+
+**3. Payments**
+- Payment ID
+- Order ID
+- Date/time
+- Payment method
+- Amount
+- Reference
+- Other available payment fields
+
+Use the existing payment schema and omit fields that do not exist.
+
+**4. Expenses**
+- Expense ID
+- Date/time
+- Purpose/item
+- Category
+- Quantity
+- Unit price
+- Total
+- Payment method
+- Supplier
+- Notes
+- Added by
+
+Include available fields only and preserve the existing expense records.
+
+**5. Daily Breakdown**
+- Date
+- Completed order count
+- Completed sales
+- Recorded expenses
+- Net amount after recorded expenses
+
+**6. Items Sold**
+- Item/deal name
+- Quantity sold
+- Sales amount where reliable
+- Any useful category information already available
+
+Use historical snapshots where available and prevent combo double-counting.
+
+### Excel export verification
+
+Verify that:
+
+- The downloaded file is a genuine `.xlsx` workbook.
+- All six required worksheets exist.
+- The workbook opens or can be parsed by a compatible spreadsheet library.
+- Exported summary values match the on-screen report for the same period.
+- Export date filtering matches the screen.
+- Cancelled orders and expenses are handled correctly.
+- Payment records are not double-counted in sales totals.
+
+Do not claim these checks passed unless they were actually performed.
+
+---
+
+## FEATURE 3 — MANAGER-ONLY DEALS / COMBO OFFERS
+
+Add a **Deals** page to the existing Manager Panel.
+
+Managers must be able to create, view, edit, activate, deactivate, and delete deals.
+
+Each deal supports:
+
+- Deal name
+- Optional description
+- One or more existing menu items
+- Required quantity for each item
+- Fixed deal price in PKR
+- Active/inactive status
+
+Example:
+
+**Rice & Drink Combo**
+- Chicken rice × 1
+- Cold drink × 1
+- Fixed deal price: PKR 500
+
+Use existing menu items. Do not create duplicate menu products for combo components.
+
+### POS behavior
+
+- Add a clear Deals / Combos section to the existing POS.
+- Show only active deals to cashiers.
+- Allow a cashier to add a deal to the current order.
+- Display the deal name, included items, quantities, and fixed price.
+- Allow deal quantity to be increased, decreased, manually entered, and removed.
+- Apply the fixed deal price correctly.
+- Do not charge both the deal price and the individual prices of included items for the same combo.
+- If a customer separately orders an item also included in a deal, preserve that separate item and its separate charge.
+- Keep deal entries distinct from individual menu-item entries in the cart and completed order.
+- Recalculate the order totals correctly.
+
+### Historical order preservation
+
+When an order is completed, save a snapshot of:
+
+- Deal name
+- Included item names
+- Included item quantities
+- Deal quantity
+- Fixed deal price
+- Any other information needed to reproduce the original receipt
+
+Editing or deleting a deal later must not change previous completed orders, reports, or receipts.
+
+Keep the order model backward-compatible with older orders that do not contain deals. Avoid breaking historical order records.
+
+### Deal permissions
+
+- Managers can manage deals.
+- Cashiers can view and select active deals in the POS.
+- Cashiers cannot create, edit, activate/deactivate, or delete deals.
+- Protect manager-only pages and actions using the existing authorization approach.
+
+---
+
+## FEATURE 4 — SEPARATE KITCHEN ORDER TOKEN
+
+Add a compact **Kitchen Token / Order Slip** that can be printed separately from the customer receipt.
+
+This is a kitchen preparation slip, not a full kitchen display system.
+
+### Kitchen token contents
+
+Include:
+
+- Restaurant name
+- Restaurant logo, if configured
+- Large, easy-to-read order number
+- Order date and time
+- Order type: Dine-in, Takeaway, or Delivery
+- Table number/name for dine-in orders
+- Customer name or delivery details where relevant
+- Item names and quantities
+- Item notes and order notes where present
+- Deal name and included item names/quantities
+- Special preparation instructions
+
+Do not show prices, totals, or payment details on the kitchen token unless the existing application has a clear requirement for them.
+
+### Printing behavior
+
+- Add a **Print Kitchen Token** action to the appropriate order/receipt screen.
+- Allow kitchen tokens for newly completed orders and existing orders where sufficient saved data is available.
+- Where practical, provide a combined action that opens/prints the customer bill and kitchen token as separate print views. If this is unreliable with the existing browser-print architecture, prioritize separate reliable print actions.
+- Use a compact, printer-friendly layout suitable for a small receipt printer.
+- Keep kitchen notes separate from customer financial totals.
+- Reuse the existing browser print fallback.
+- Each action must open the correct print view and invoke the print workflow only once.
+- Do not claim that silent physical printing is available in the browser.
+- Direct/silent thermal printing will be addressed later during Stage 2.
+- The token must remain viewable and printable through the normal browser print dialog without a physical printer attached.
+
+---
+
+## FEATURE 5 — MANUAL QUANTITY ENTRY IN THE POS
+
+Improve the existing cart quantity controls without removing the plus (+), minus (−), or remove-item buttons.
+
+### Required behavior
+
+- Allow the cashier to click or focus the quantity number and type a quantity directly.
+- Accept positive whole-number quantities only.
+- Apply the new quantity when Enter is pressed or the field loses focus.
+- Recalculate line totals, subtotal, discount, delivery charge where applicable, and grand total.
+- Work for Dine-in, Takeaway, and Delivery orders.
+- Work for ordinary menu items and deal/combo entries.
+- Preserve the existing remove-item functionality.
+
+Example: the cashier changes a cart item's quantity from 2 to 15, presses Enter, and the cart updates to quantity 15 with correctly recalculated totals.
+
+### Safe validation
+
+- Reject negative, zero, decimal, empty-final, and non-numeric quantities.
+- Do not remove an item merely because the quantity input is temporarily empty while being edited.
+- If the entered quantity is invalid, restore the previous valid quantity and show a clear, non-disruptive validation message if appropriate.
+- Avoid accidentally submitting or completing the order when Enter is pressed inside the quantity field.
+- Changing the unfinished cart must never modify an already completed order.
+
+---
+
+## FEATURE 6 — EXPENSES AND RECEIPT COMPATIBILITY CHECK
+
+Inspect the existing Expenses, Settings, Orders, and receipt functionality. Preserve any working features and make only necessary compatibility fixes for the requested reports, deals, kitchen tokens, and Excel export.
+
+Specifically verify:
+
+- Reports use the existing saved expense records.
+- Expenses are counted once per report period.
+- Net amount uses completed sales minus recorded expenses.
+- Customer receipts continue to display the correct item quantities and prices.
+- Deal information appears on the customer receipt without double-charging included items.
+- Historical orders and receipts remain unchanged after menu or deal edits.
+- The kitchen token is separate from the customer bill.
+- Existing logo and restaurant information appear on the appropriate print views where configured.
+- Existing payments, methods, references, and totals remain intact.
+
+Do not redesign or rewrite these modules if they already work.
+
+---
+
+## TESTING AND ACCEPTANCE CHECKLIST
+
+Inspect the current code first, then implement missing functionality and run focused tests.
+
+### Reports and Excel
+
+1. Today and Yesterday periods return the correct records.
+2. This Week and Last Week return the correct records.
+3. This Month and Last Month return the correct records.
+4. Custom Date Range filters records correctly, including date boundaries.
+5. Cancelled orders are excluded from completed sales totals and counted separately.
+6. Expenses are counted once.
+7. Payment records do not cause order sales to be double-counted.
+8. Sales by method and order type are consistent with the underlying records.
+9. Daily breakdown sales, expenses, and net amounts are correct.
+10. Net amount equals completed sales minus recorded expenses.
+11. Best-selling item totals use reliable saved data and do not double-count deals.
+12. Excel export downloads a valid `.xlsx` file.
+13. The workbook contains all six required worksheets.
+14. Exported totals match the displayed report.
+15. Existing records remain unchanged.
+
+### Deals and POS quantities
+
+16. A manager can create a deal using existing menu items.
+17. A manager can edit, activate, deactivate, and delete deals.
+18. A cashier sees active deals and can add them to an order.
+19. A cashier cannot access deal-management actions or routes.
+20. Deal price is fixed and included items are not double-charged.
+21. Separate orders of the same menu items retain their individual prices.
+22. Deal quantities can be increased, decreased, manually edited, and removed.
+23. Manual quantities work for all three order types.
+24. Invalid quantity entry safely restores the previous valid quantity.
+25. Line totals, discounts, delivery charges, and grand totals recalculate correctly.
+26. Completed orders preserve their original deal details and price after deal edits.
+27. Existing individual menu items and older orders still work normally.
+
+### Kitchen tokens and compatibility
+
+28. Kitchen tokens show correct order number, date/time, order type, and relevant table/customer details.
+29. Kitchen tokens display the correct quantities, deal contents, and saved notes/instructions.
+30. Customer receipts remain separate from kitchen tokens.
+31. Customer receipt totals are unchanged and correct.
+32. Kitchen-token printing invokes the browser print workflow once per action.
+33. Existing POS, order, payment, expense, settings, staff, and permission workflows remain functional.
+
+### Build and final verification
+
+34. Run the relevant automated tests, if available.
+35. Run TypeScript/type checking.
+36. Run the production build.
+37. Fix errors introduced by these changes.
+38. If a test cannot be performed, state that honestly rather than marking it passed.
+
+Use focused tests and minimal changes to conserve credits. Do not run unrelated installation or infrastructure migrations unless required for these features.
+
+---
+
+## IMPLEMENTATION ORDER — KEEP THE WORK FOCUSED
+
+1. Inspect existing report calculations, report UI, orders, payments, expenses, menu/deal data structures, cart logic, permissions, receipts, print views, and available test/build scripts.
+2. List only the actual gaps you found, briefly.
+3. Implement the missing reports and shared calculations.
+4. Implement the six-sheet Excel export using those same calculations.
+5. Implement or complete deals and historical deal snapshots.
+6. Implement manual cart quantity entry for items and deals.
+7. Implement the separate kitchen token print view and action.
+8. Run focused tests, type checking, and production build.
+9. Fix problems caused by these changes.
+10. Provide the final report.
+
+If credit limits make the full scope impossible in one run, prioritize keeping the application runnable, complete the highest-priority unfinished parts, and explicitly list the remaining work. Do not silently omit features or claim completion.
+
+## STRICTLY OUT OF SCOPE — DO NOT START STAGE 2
+
+Do not implement any of the following in this task:
+
+- SQLite or a new database migration
+- Windows desktop packaging
+- Direct or silent thermal printing
+- Cloud hosting or cloud synchronization
+- Inventory management
+- Full kitchen display system
+- Unrelated redesign or new modules
+
+These are future Stage 2 or later tasks. Finish and verify the current feature work first.
+
+## FINAL RESPONSE REQUIRED
+
+When finished, report:
+
+1. Features completed
+2. Features that were already present and reused
+3. Tests actually performed and their real results
+4. TypeScript/type-check result
+5. Production build result
+6. Files changed
+7. Any incomplete work, blockers, or known limitations
+8. Confirmation that Stage 2 was not started
+
+**Do not claim success without evidence. Keep the existing project intact and runnable.**
