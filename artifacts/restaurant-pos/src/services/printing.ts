@@ -47,8 +47,8 @@ export function buildKitchenTokenMarkup(order: Order, settings: RestaurantSettin
       <ul>${deal.items.map(item => `<li>${item.quantity * deal.quantity} × ${escapeHtml(item.name)}</li>`).join('')}</ul>
     </li>`).join('');
   const customer = [order.customerName, order.customerPhone].filter(Boolean).map(value => escapeHtml(value as string)).join(' · ');
-  const table = order.type === 'Dine-in' && order.tableNameSnapshot
-    ? `<span>${escapeHtml(order.tableNameSnapshot)}</span>`
+  const table = order.type === 'Dine-in'
+    ? `<span>${escapeHtml(order.tableNameSnapshot || 'No table')}</span>`
     : '';
   return `<section class="kitchen-token ${widthClass}" data-testid="kitchen-token-${escapeHtml(order.id)}" aria-label="Kitchen token">
     <header class="kitchen-token-header">${logo ? `<img src="${escapeHtml(logo)}" alt="">` : ''}

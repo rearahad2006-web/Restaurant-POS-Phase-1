@@ -1,0 +1,32 @@
+Fix these two UI/behavior issues in my existing Restaurant POS project. The Preview is already working.
+
+IMPORTANT: Make only the minimum necessary changes. Do not rebuild the app, change the database/storage system, or modify unrelated features.
+
+### 1. Make the table selection optional for Dine-in orders
+- Currently, selecting a table is required for a Dine-in order.
+- Make table selection optional.
+- Allow the cashier to create and complete a Dine-in order without selecting a table.
+- If a table is selected, keep the existing table assignment and order behavior unchanged.
+- If no table is selected, save the order successfully with a null/empty table assignment as appropriate for the existing data model.
+- Do not automatically assign a table when the cashier leaves it unselected.
+- Ensure the order, receipt, kitchen token, order history, and reports handle orders without a table gracefully. Show "No table" or omit the table line when appropriate.
+- Preserve existing table availability and status logic for orders that do have a selected table.
+- Do not introduce validation errors or crashes for orders without a table.
+
+### 2. Keep the Manager Panel Logout button accessible
+- The Manager Panel page can scroll, making the Logout button difficult to find.
+- Place Logout in a consistently visible, accessible location, preferably the manager header or a fixed/sticky sidebar/header.
+- Keep it visible while the main content scrolls.
+- Ensure it works correctly at different screen sizes and does not cover important content.
+- Preserve the existing logout confirmation and session/authentication behavior, if implemented.
+- Keep the existing visual style consistent with the POS.
+
+### Verification
+- Test a Dine-in order with a selected table.
+- Test a Dine-in order without a table.
+- Verify order saving, kitchen token, receipt, order history, and table status for both cases.
+- Scroll the Manager Panel fully down and confirm Logout remains accessible.
+- Verify Logout actually ends the manager session and redirects to the correct screen.
+- Run the existing typecheck, build, and tests if available.
+
+Report exactly which files were changed and which checks passed. Do not begin Phase 2.1 or change storage architecture.
