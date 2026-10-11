@@ -1,4 +1,5 @@
-import type { Expense, Order, OrderType, Payment, PaymentMethod } from '../domain';
+import type { BusinessDay, Expense, Order, OrderType, Payment, PaymentMethod } from '../domain';
+import { businessDateForTimestamp } from '../domain/business-days';
 
 export type ReportPeriod =
   | 'today'
@@ -20,6 +21,7 @@ export interface ReportDataSource {
   orders: readonly Order[];
   payments: readonly Payment[];
   expenses: readonly Expense[];
+  businessDays?: readonly BusinessDay[];
 }
 
 export interface ReportDateRange {
@@ -102,7 +104,7 @@ export const NET_AMOUNT_NOTE =
   'Net Amount After Recorded Expenses = completed sales − recorded expenses. It is not guaranteed accounting profit; unrecorded inventory, bills, taxes, and other costs are excluded.';
 
 export const ITEM_SALES_NOTE =
-  'Item sales use saved order-line snapshots. Order-level discounts are not allocated to individual items, and combo contents are not stored separately, so combos are shown only by their saved line name and total.';
+  'Item sales use saved order-line snapshots. Order-level discounts are not allocated to individual items. Deals are shown as a separate fixed-price line; their included contents are preserved on the order and kitchen token.';
 
 export function localDateKey(date: Date): string {
   const year = date.getFullYear();
@@ -236,9 +238,17 @@ export function timestampIsInRange(value: string, range: ReportDateRange): boole
     timestamp < range.endExclusive;
 }
 
-function timestampLocalDateKey(value: string): string | null {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : localDateKey(date);
+function recordIsInBusinessDateRange(
+  value: string,
+  businessDayId: string | undefined,
+  range: ReportDateRange,
+  data: ReportDataSource,
+): boolean {
+  const assignedDate = businessDayId
+    ? data.businessDays?.find(day => day.id === businessDayId)?.businessDate
+    : undefined;
+  const businessDate = assignedDate || businessDateForTimestamp(value);
+  return businessDate >= range.startDate && businessDate <= range.endDate;
 }
 
 function effectivePayments(data: ReportDataSource): Payment[] {
@@ -285,7 +295,7 @@ export function calculateReport(
         );
 
   const scopedOrders = data.orders.filter(order =>
-    timestampIsInRange(order.createdAt, range) &&
+    recordIsInBusinessDateRange(order.createdAt, order.businessDayId, range, data) &&
     (filters.orderType === 'all' || order.type === filters.orderType) &&
     (!matchingMethodOrderIds || matchingMethodOrderIds.has(order.id)),
   );
@@ -297,7 +307,7 @@ export function calculateReport(
     const order = ordersById.get(payment.orderId);
     if (
       !order ||
-      !timestampIsInRange(payment.dateTime, range) ||
+      !recordIsInBusinessDateRange(order.createdAt, order.businessDayId, range, data) ||
       (filters.paymentMethod !== 'all' && payment.method !== filters.paymentMethod) ||
       (filters.orderType !== 'all' && order.type !== filters.orderType)
     ) {
@@ -316,8 +326,10 @@ export function calculateReport(
     if (
       !order ||
       !completedOrderIds.has(order.id) ||
+      !recordIsInBusinessDateRange(order.createdAt, order.businessDayId, range, data) ||
       payment.status !== 'paid' ||
-      (filters.paymentMethod !== 'all' && payment.method !== filters.paymentMethod)
+      (filters.paymentMethod !== 'all' && payment.method !== filters.paymentMethod) ||
+      (filters.orderType !== 'all' && order.type !== filters.orderType)
     ) {
       return [];
     }
@@ -329,7 +341,9 @@ export function calculateReport(
     }];
   });
 
-  const expenses = data.expenses.filter(expense => timestampIsInRange(expense.dateTime, range));
+  const expenses = data.expenses.filter(expense =>
+    recordIsInBusinessDateRange(expense.dateTime, expense.businessDayId, range, data),
+  );
   const sales = completedOrders.reduce((sum, order) => sum + (Number(order.total) || 0), 0);
   const totalExpenses = expenses.reduce((sum, expense) => sum + (Number(expense.total) || 0), 0);
 
@@ -360,8 +374,16 @@ export function calculateReport(
 
   const dailyBreakdown: DailyReportRow[] = [];
   for (let key = range.startDate; key <= range.endDate; key = addLocalDays(key, 1)) {
-    const dailyOrders = completedOrders.filter(order => timestampLocalDateKey(order.createdAt) === key);
-    const dailyExpenses = expenses.filter(expense => timestampLocalDateKey(expense.dateTime) === key);
+    const dailyOrders = completedOrders.filter(order =>
+      recordIsInBusinessDateRange(order.createdAt, order.businessDayId, {
+        ...range, startDate: key, endDate: key,
+      }, data),
+    );
+    const dailyExpenses = expenses.filter(expense =>
+      recordIsInBusinessDateRange(expense.dateTime, expense.businessDayId, {
+        ...range, startDate: key, endDate: key,
+      }, data),
+    );
     const dailySales = dailyOrders.reduce((sum, order) => sum + (Number(order.total) || 0), 0);
     const expenseTotal = dailyExpenses.reduce((sum, expense) => sum + (Number(expense.total) || 0), 0);
     dailyBreakdown.push({
@@ -385,6 +407,18 @@ export function calculateReport(
       };
       current.quantity += Number(item.quantity) || 0;
       current.sales += Number(item.lineTotal) || 0;
+      itemTotals.set(key, current);
+    }
+    for (const deal of order.deals || []) {
+      const key = `${deal.dealId}\u0000${deal.name} (deal)`;
+      const current = itemTotals.get(key) || {
+        menuItemId: deal.dealId,
+        name: `${deal.name} (deal)`,
+        quantity: 0,
+        sales: 0,
+      };
+      current.quantity += Number(deal.quantity) || 0;
+      current.sales += Number(deal.lineTotal) || 0;
       itemTotals.set(key, current);
     }
   }

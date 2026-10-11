@@ -8,10 +8,15 @@ export interface Table { id: string; name: string; capacity: number; createdAt: 
 export interface Category { id: string; name: string; sortOrder: number; createdAt: string; updatedAt: string }
 export interface MenuItem { id: string; name: string; description: string; price: number; categoryId: string; available: boolean; imageDataUrl?: string; createdAt: string; updatedAt: string }
 export interface OrderItem { menuItemId: string; name: string; unitPrice: number; quantity: number; lineTotal: number; note?: string }
+export interface DealItem { menuItemId: string; quantity: number; nameSnapshot?: string }
+export interface Deal { id: string; name: string; description?: string; fixedPrice: number; items: DealItem[]; active: boolean; createdAt: string; updatedAt: string }
+export interface DealContentSnapshot { menuItemId: string; name: string; quantity: number }
+export interface OrderDeal { dealId: string; name: string; description?: string; unitPrice: number; quantity: number; lineTotal: number; items: DealContentSnapshot[] }
 export interface Payment { id: string; orderId: string; dateTime: string; method: PaymentMethod; amount: number; status: 'paid' | 'cancelled'; amountReceived?: number; change?: number; reference?: string; createdAt?: string }
-export interface Expense { id: string; dateTime: string; purpose: string; category: string; quantity: number; unitPrice: number; total: number; directTotal?: boolean; paymentMethod: PaymentMethod; supplier?: string; notes?: string; addedBy: string; createdAt: string; updatedAt: string }
-export interface Order { id: string; orderNumber: string; createdAt: string; updatedAt: string; type: OrderType; status: OrderStatus; tableId?: string; tableNameSnapshot?: string; customerName?: string; customerPhone?: string; deliveryAddress?: string; notes?: string; subtotal: number; discount: number; deliveryCharge: number; total: number; cashierName: string; items: OrderItem[]; payment?: Payment }
-export interface AppData { users: User[]; settings: RestaurantSettings; tables: Table[]; categories: Category[]; menuItems: MenuItem[]; orders: Order[]; payments: Payment[]; expenses: Expense[] }
+export interface Expense { id: string; dateTime: string; purpose: string; category: string; quantity: number; unitPrice: number; total: number; directTotal?: boolean; paymentMethod: PaymentMethod; supplier?: string; notes?: string; addedBy: string; createdAt: string; updatedAt: string; businessDayId?: string }
+export interface BusinessDay { id: string; businessDate: string; startAt: string; startedBy: string; openingCash?: number; endAt?: string; endedBy?: string; closingCash?: number; status: 'open' | 'closed' }
+export interface Order { id: string; orderNumber: string; createdAt: string; updatedAt: string; type: OrderType; status: OrderStatus; tableId?: string; tableNameSnapshot?: string; tableReleasedAt?: string; businessDayId?: string; customerName?: string; customerPhone?: string; deliveryAddress?: string; notes?: string; subtotal: number; discount: number; deliveryCharge: number; total: number; cashierName: string; items: OrderItem[]; deals?: OrderDeal[]; payment?: Payment }
+export interface AppData { users: User[]; settings: RestaurantSettings; tables: Table[]; categories: Category[]; menuItems: MenuItem[]; orders: Order[]; payments: Payment[]; expenses: Expense[]; deals: Deal[]; businessDays: BusinessDay[] }
 export const makeId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 export const now = () => new Date().toISOString();
 export const money = (value: number, currency = 'PKR') => `${currency} ${Number(value || 0).toLocaleString('en-PK', { maximumFractionDigits: 2 })}`;
@@ -45,4 +50,6 @@ export const seededData: AppData = {
   orders: [],
   payments: [],
   expenses: [],
+  deals: [],
+  businessDays: [],
 };

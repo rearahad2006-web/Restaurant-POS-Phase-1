@@ -24,6 +24,8 @@ export class BrowserLocalRepository implements RestaurantRepository {
           orders: Array.isArray(old.orders) ? old.orders : [],
           payments: Array.isArray(old.payments) ? [...old.payments] : [],
           expenses: Array.isArray(old.expenses) ? [...old.expenses] : [],
+          deals: Array.isArray(old.deals) ? [...old.deals] : [],
+          businessDays: Array.isArray(old.businessDays) ? [...old.businessDays] : [],
         } as AppData;
         const accounts = [...merged.users];
         for (const seeded of seededData.users) {

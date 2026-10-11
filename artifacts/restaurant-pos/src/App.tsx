@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, createContext, useContext, type ReactNode, type FormEvent } from 'react';
 import { Route, Switch, Link, useLocation } from 'wouter';
 import { LayoutDashboard, ShoppingCart, UtensilsCrossed, Armchair, ClipboardList, Search, Plus, Minus, Trash2, Pencil, Printer, LogOut, Banknote, CircleDollarSign, Clock3, Check, X, ChevronRight, CircleHelp, ReceiptText, WifiOff, PackagePlus, Users, Salad, CreditCard, MapPin, Phone, FileText, AlertCircle, ArrowUpRight, BarChart3, Settings, UserRound, CalendarDays, Eye } from 'lucide-react';
-import { AppData, Category, Expense, MenuItem, Order, OrderItem, OrderType, PaymentMethod, Payment, Table, UserRole, money, makeId, now } from './domain';
+import { AppData, BusinessDay, Category, Deal, DealItem, Expense, MenuItem, Order, OrderDeal, OrderItem, OrderType, PaymentMethod, Payment, Table, UserRole, money, makeId, now } from './domain';
 import { repository } from './storage/repository';
-import { printReceipt } from './services/printing';
+import { printKitchenToken, printReceipt } from './services/printing';
 import { downloadReportWorkbook } from './reporting/export-xlsx';
+import { activeBusinessDay, businessDateForRecord, businessDateForTimestamp, closeBusinessDay, isOrderOccupyingTable, nextAvailableTableId, occupiedTableIds } from './domain/business-days';
 import {
   calculateReport,
   formatLocalDateKey,
@@ -16,16 +17,24 @@ import {
   type ReportPeriod,
 } from './reporting/report-calculations';
 
-interface Store { data: AppData; setData: (updater: (data: AppData) => AppData) => void; user: AppData['users'][number] | null; setUser: (user: AppData['users'][number] | null) => void; draftTableId: string | null; setDraftTableId: (id: string | null) => void; toast: (message: string) => void }
+interface Store { data: AppData; setData: (updater: (data: AppData) => AppData) => void; user: AppData['users'][number] | null; setUser: (user: AppData['users'][number] | null) => void; draftTableId: string | null; setDraftTableId: (id: string | null) => void; recoveryDetected: boolean; setRecoveryDetected: (value: boolean) => void; toast: (message: string) => void }
 const StoreContext = createContext<Store | null>(null);
 const useStore = () => { const value = useContext(StoreContext); if (!value) throw new Error('Store unavailable'); return value; };
 const currency = (data: AppData) => data.settings.currency;
+const RUNTIME_SESSION_KEY = 'juniper-pos.runtime-session';
 function App() {
   const [data, setDataState] = useState<AppData | null>(null);
   const [user, setUser] = useState<AppData['users'][number] | null>(() => { try { return JSON.parse(localStorage.getItem('juniper-pos.user') || 'null'); } catch { return null; } });
   const [draftTableId, setDraftTableId] = useState<string | null>(null);
+  const [recoveryDetected, setRecoveryDetected] = useState(false);
   const [toastText, setToastText] = useState('');
-  useEffect(() => { repository.load().then(setDataState); }, []);
+  useEffect(() => {
+    try {
+      setRecoveryDetected(Boolean(localStorage.getItem(RUNTIME_SESSION_KEY)));
+      localStorage.setItem(RUNTIME_SESSION_KEY, JSON.stringify({ openedAt: now() }));
+    } catch { /* Local persistence errors are reported by repository operations. */ }
+    repository.load().then(setDataState);
+  }, []);
   const setData = (updater: (current: AppData) => AppData) => setDataState(current => {
     if (!current) return current;
     const next = updater(current);
@@ -34,15 +43,18 @@ function App() {
   });
   const toast = (message: string) => { setToastText(message); window.setTimeout(() => setToastText(''), 2600); };
   if (!data) return <div className="login-screen"><div className="login-art"><div className="login-brand"><div className="brand-mark">J</div><div><div className="brand-name">Juniper & Hearth</div><div className="brand-sub">Local service desk</div></div></div><div className="login-hero"><h1>Service, in good hands.</h1><p>Starting your local register and preparing today's menu.</p></div><span className="login-food-note">A neighborhood table since 2019</span></div><div className="login-form-side"><div className="panel" style={{ padding: 24, width: 320 }}><div className="stat-label">OPENING REGISTER</div><div className="stat-value">Ready shortly</div><div style={{ height: 8, borderRadius: 20, background: 'hsl(var(--secondary))' }} /></div></div></div>;
-  return <StoreContext.Provider value={{ data, setData, user, setUser, draftTableId, setDraftTableId, toast }}>
-      <Switch><Route path="/login" component={LoginPage} /><Route><ProtectedShell><Switch><Route path="/" component={DashboardPage} /><Route path="/dashboard" component={DashboardPage} /><Route path="/pos" component={PosPage} /><Route path="/tables" component={TablesPage} /><Route path="/menu" component={MenuPage} /><Route path="/orders" component={OrdersPage} /><Route path="/payments" component={PaymentsPage} /><Route path="/expenses" component={ExpensesPage} /><Route path="/reports" component={ReportsPage} /><Route path="/staff" component={StaffPage} /><Route path="/settings" component={SettingsPage} /><Route component={NotFoundPage} /></Switch></ProtectedShell></Route></Switch>
+  return <StoreContext.Provider value={{ data, setData, user, setUser, draftTableId, setDraftTableId, recoveryDetected, setRecoveryDetected, toast }}>
+      <Switch><Route path="/login" component={LoginPage} /><Route><ProtectedShell><Switch><Route path="/" component={DashboardPage} /><Route path="/dashboard" component={DashboardPage} /><Route path="/pos" component={PosPage} /><Route path="/tables" component={TablesPage} /><Route path="/menu" component={MenuPage} /><Route path="/deals" component={DealsPage} /><Route path="/business-day" component={BusinessDayPage} /><Route path="/orders" component={OrdersPage} /><Route path="/payments" component={PaymentsPage} /><Route path="/expenses" component={ExpensesPage} /><Route path="/reports" component={ReportsPage} /><Route path="/staff" component={StaffPage} /><Route path="/settings" component={SettingsPage} /><Route component={NotFoundPage} /></Switch></ProtectedShell></Route></Switch>
     {toastText && <div className="notice" role="status" data-testid="status-notice">{toastText}</div>}
   </StoreContext.Provider>;
 }
 
 function ProtectedShell({ children }: { children: ReactNode }) {
-  const { user, setUser, data } = useStore();
+  const { user, setUser, data, setData, recoveryDetected, setRecoveryDetected } = useStore();
   const [location, setLocation] = useLocation();
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [logoutCash, setLogoutCash] = useState('');
+  const openDay = activeBusinessDay(data.businessDays);
   useEffect(() => { if (!user && location !== '/login') setLocation('/login'); }, [user, location, setLocation]);
   useEffect(() => { if (user?.role !== 'Manager' && !['/pos', '/orders', '/payments'].includes(location)) setLocation('/pos'); }, [user, location, setLocation]);
   if (!user) return <LoginPage />;
@@ -56,6 +68,8 @@ function ProtectedShell({ children }: { children: ReactNode }) {
     { href: '/menu', label: 'Menu', icon: UtensilsCrossed },
     { href: '/tables', label: 'Tables', icon: Armchair },
     { href: '/reports', label: 'Reports', icon: BarChart3 },
+    { href: '/deals', label: 'Deals', icon: PackagePlus },
+    { href: '/business-day', label: 'Business day', icon: CalendarDays },
     { href: '/staff', label: 'Staff', icon: Users },
     { href: '/settings', label: 'Settings', icon: Settings },
   ] : [
@@ -63,7 +77,25 @@ function ProtectedShell({ children }: { children: ReactNode }) {
     { href: '/orders', label: 'Orders', icon: ClipboardList },
     { href: '/payments', label: 'Payments', icon: Banknote },
   ]);
-  return <div className={`app-shell ${data.settings.compactDisplay ? 'compact-display' : ''}`}><aside className="sidebar"><div className="brand"><div className="brand-mark">J</div><div><div className="brand-name">{data.settings.name}</div><div className="brand-sub">Local service desk</div></div></div><div className="nav-label">Restaurant</div><nav>{links.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={`nav-link ${location === href || (href === '/dashboard' && location === '/') ? 'active' : ''}`} data-testid={`link-${label.toLowerCase().replaceAll(' ', '-')}`}><Icon className="nav-icon" /><span>{label}</span></Link>)}</nav><div className="sidebar-spacer" /><div className="local-note"><b><i className="local-dot" />Stored on this device</b>Core register data is kept in this browser. No cloud connection is needed.</div><div className="sidebar-user"><div className="avatar">{user.name.split(' ').map(part => part[0]).join('').slice(0, 2)}</div><div className="user-copy"><div className="user-name">{user.name}</div><div className="user-role">{user.role} · local</div></div><button className="btn btn-quiet btn-sm" aria-label="Sign out" title="Sign out" onClick={() => { setUser(null); localStorage.removeItem('juniper-pos.user'); setLocation('/login'); }} data-testid="button-sign-out"><LogOut size={15} /></button></div></aside><main className="main-area"><header className="topbar"><div className="topbar-date">{new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date())}</div><div className="topbar-right"><span className="offline-pill"><i />LOCAL · READY</span></div></header>{children}</main></div>;
+  const signOut = (endDay: boolean) => {
+    if (endDay && openDay && user.role === 'Manager') {
+      const amount = logoutCash.trim() ? Number(logoutCash) : undefined;
+      setData(current => ({ ...current, businessDays: current.businessDays.map(day => day.id === openDay.id ? closeBusinessDay(day, user.name, now(), amount) : day) }));
+    }
+    setUser(null);
+    localStorage.removeItem('juniper-pos.user');
+    localStorage.removeItem(RUNTIME_SESSION_KEY);
+    setRecoveryDetected(false);
+    setLogoutOpen(false);
+    setLocation('/login');
+  };
+  return <div className={`app-shell ${data.settings.compactDisplay ? 'compact-display' : ''}`}><aside className="sidebar"><div className="brand"><div className="brand-mark">J</div><div><div className="brand-name">{data.settings.name}</div><div className="brand-sub">Local service desk</div></div></div><div className="nav-label">Restaurant</div><nav>{links.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={`nav-link ${location === href || (href === '/dashboard' && location === '/') ? 'active' : ''}`} data-testid={`link-${label.toLowerCase().replaceAll(' ', '-')}`}><Icon className="nav-icon" /><span>{label}</span></Link>)}</nav><div className="sidebar-spacer" /><div className="local-note"><b><i className="local-dot" />Stored on this device</b>Core register data is kept in this browser. No cloud connection is needed.</div><div className="sidebar-user"><div className="avatar">{user.name.split(' ').map(part => part[0]).join('').slice(0, 2)}</div><div className="user-copy"><div className="user-name">{user.name}</div><div className="user-role">{user.role} · local</div></div><button className="btn btn-quiet btn-sm" aria-label="Sign out" title="Sign out" onClick={() => { setLogoutCash(''); setLogoutOpen(true); }} data-testid="button-sign-out"><LogOut size={15} /></button></div></aside><main className="main-area"><header className="topbar"><div className="topbar-date">{new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date())}</div><div className="topbar-right"><span className="badge" data-testid="status-business-day">{openDay ? `Business day · ${openDay.businessDate}` : 'No business day open'}</span><span className="offline-pill"><i />LOCAL · READY</span></div></header>{children}
+    {logoutOpen && <Dialog title="Sign out" onClose={() => setLogoutOpen(false)}>
+      {openDay ? <><div className="callout">Business day <b>{openDay.businessDate}</b> is still open. Ending it closes the day for new orders. Leaving it open preserves the day for another authorized staff member.</div>{user.role === 'Manager' && <div className="field" style={{ marginTop: 14 }}><label htmlFor="logout-closing-cash">Closing cash (optional)</label><input id="logout-closing-cash" type="number" min="0" step="0.01" className="input" value={logoutCash} onChange={event => setLogoutCash(event.target.value)} /></div>}</> : <p className="page-subtitle">No business day is currently open. Your saved orders and records will remain on this device.</p>}
+      <div className="dialog-actions"><button className="btn" onClick={() => setLogoutOpen(false)}>Stay signed in</button><button className="btn" onClick={() => signOut(false)}>Leave day open & sign out</button>{openDay && user.role === 'Manager' && <button className="btn btn-danger" onClick={() => signOut(true)}>End day & sign out</button>}</div>
+    </Dialog>}
+    {recoveryDetected && openDay && user.role === 'Manager' && location !== '/business-day' && <div className="recovery-banner" role="status"><AlertCircle size={15} /><span>Previous register session ended unexpectedly. Business day {openDay.businessDate} remains open. No shutdown time was recorded.</span><Link href="/business-day" className="btn btn-sm">Review</Link></div>}
+  </main></div>;
 }
 
 function PageHeader({ eyebrow, title, subtitle, action }: { eyebrow: string; title: string; subtitle?: string; action?: ReactNode }) {
@@ -81,19 +113,26 @@ function LoginPage() {
 
 function DashboardPage() {
   const { data } = useStore();
-  const today = new Date().toDateString();
-  const todayOrders = data.orders.filter(order => new Date(order.createdAt).toDateString() === today);
+  const today = activeBusinessDay(data.businessDays)?.businessDate || businessDateForTimestamp(new Date());
+  const orderBusinessDate = (order: Order) => businessDateForRecord(order.createdAt, order.businessDayId, data);
+  const paymentBusinessDate = (payment: Payment) => {
+    const order = data.orders.find(candidate => candidate.id === payment.orderId);
+    return order ? orderBusinessDate(order) : businessDateForTimestamp(payment.dateTime);
+  };
+  const todayOrders = data.orders.filter(order => orderBusinessDate(order) === today);
   const paid = todayOrders.filter(order => order.status === 'paid');
-  const paymentsToday = data.payments.filter(payment => new Date(payment.dateTime).toDateString() === today && payment.status === 'paid' && data.orders.find(order => order.id === payment.orderId)?.status === 'paid');
+  const paymentsToday = data.payments.filter(payment => paymentBusinessDate(payment) === today && payment.status === 'paid' && data.orders.find(order => order.id === payment.orderId)?.status === 'paid');
   const sales = paymentsToday.reduce((sum, payment) => sum + payment.amount, 0);
   const max = Math.max(1, ...Array.from({ length: 7 }, (_, i) => {
-    const day = new Date(); day.setDate(day.getDate() - (6 - i));
-    return data.payments.filter(payment => payment.status === 'paid' && new Date(payment.dateTime).toDateString() === day.toDateString() && data.orders.find(order => order.id === payment.orderId)?.status === 'paid').reduce((sum, payment) => sum + payment.amount, 0);
+    const day = new Date(`${today}T12:00:00`); day.setDate(day.getDate() - (6 - i));
+    const key = localDateKey(day);
+    return data.payments.filter(payment => payment.status === 'paid' && paymentBusinessDate(payment) === key && data.orders.find(order => order.id === payment.orderId)?.status === 'paid').reduce((sum, payment) => sum + payment.amount, 0);
   }));
   const values = Array.from({ length: 7 }, (_, i) => {
-    const day = new Date(); day.setDate(day.getDate() - (6 - i));
-    const amount = data.payments.filter(payment => payment.status === 'paid' && new Date(payment.dateTime).toDateString() === day.toDateString() && data.orders.find(order => order.id === payment.orderId)?.status === 'paid').reduce((sum, payment) => sum + payment.amount, 0);
-    return { label: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(day), amount, height: Math.max(5, amount / max * 100), today: i === 6 };
+    const day = new Date(`${today}T12:00:00`); day.setDate(day.getDate() - (6 - i));
+    const key = localDateKey(day);
+    const amount = data.payments.filter(payment => payment.status === 'paid' && paymentBusinessDate(payment) === key && data.orders.find(order => order.id === payment.orderId)?.status === 'paid').reduce((sum, payment) => sum + payment.amount, 0);
+    return { label: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(day), amount, height: Math.max(5, amount / max * 100), today: key === today };
   });
   const { settings } = data;
   return <div className="page"><PageHeader eyebrow="SERVICE OVERVIEW" title="Good afternoon." subtitle={`${settings.name} · ${settings.address}`} action={<Link href="/pos" className="btn btn-primary" data-testid="button-new-order"><Plus size={15} /> Start an order</Link>} />
@@ -150,6 +189,15 @@ function Receipt({ order, data }: { order: Order; data: AppData }) {
           </div>
           <div className="receipt-sub">Unit price: {money(item.unitPrice, currency(data))}</div>
           {item.note && <div className="receipt-sub">Note: {item.note}</div>}
+        </div>
+      ))}
+      {(order.deals || []).map((deal, index) => (
+        <div key={`${deal.dealId}-${index}`}>
+          <div className="receipt-line">
+            <span>{deal.quantity} × {deal.name}</span>
+            <span>{money(deal.lineTotal, currency(data))}</span>
+          </div>
+          <div className="receipt-sub">Includes: {deal.items.map(item => `${item.quantity * deal.quantity} × ${item.name}`).join(', ')}</div>
         </div>
       ))}
       <div className="receipt-rule" />
@@ -209,6 +257,7 @@ function Receipt({ order, data }: { order: Order; data: AppData }) {
 
 function TablesPage() {
   const { data, setData, draftTableId, toast } = useStore();
+  const openDay = activeBusinessDay(data.businessDays);
   const [editing, setEditing] = useState<Table | null | 'new'>(null);
   const [name, setName] = useState('');
   const [capacity, setCapacity] = useState('4');
@@ -223,11 +272,165 @@ function TablesPage() {
     toast(typeof editing === 'object' && editing ? 'Table details saved.' : 'Table added to the floor.');
     setEditing(null);
   };
-  const remove = (table: Table) => { if (draftTableId === table.id) { toast('This table is on the active ticket. Clear that ticket before removing it.'); return; } if (window.confirm(`Remove ${table.name}?`)) { setData(current => ({ ...current, tables: current.tables.filter(entry => entry.id !== table.id) })); toast('Table removed.'); } };
+  const remove = (table: Table) => { if (data.orders.some(order => isOrderOccupyingTable(order, openDay) && order.tableId === table.id)) { toast('This table is assigned to an active ticket. Free the table before removing it.'); return; } if (window.confirm(`Remove ${table.name}?`)) { setData(current => ({ ...current, tables: current.tables.filter(entry => entry.id !== table.id) })); toast('Table removed.'); } };
   return <div className="page"><PageHeader eyebrow="ROOM SETUP" title="Tables." subtitle="Keep the floor plan simple and current." action={<button className="btn btn-primary" onClick={() => open(null)} data-testid="button-add-table"><Plus size={15} /> Add a table</button>} />
     <div className="status-banner" style={{ marginBottom: 16 }}><WifiOff size={15} /> Tables are saved on this browser. Active ticket table is protected from edits and removal.</div>
-    {data.tables.length ? <div className="tables-grid">{[...data.tables].map(table => { const busy = table.id === draftTableId; return <div className="panel table-card" key={table.id} data-testid={`card-table-${table.id}`}><div className="table-card-top"><div><div className="eyebrow">FLOOR · {String(data.tables.indexOf(table) + 1).padStart(2, '0')}</div><div className="table-name">{table.name}</div><div className="table-capacity">{table.capacity} seats</div></div><span className={`badge ${busy ? 'badge-orange' : 'badge-green'}`}>{busy ? 'On ticket' : 'Available'}</span></div><div className="table-actions"><button className="btn btn-sm" onClick={() => open(table)} disabled={busy} data-testid={`button-edit-table-${table.id}`}><Pencil size={12} /> Edit</button><button className="btn btn-sm btn-danger" onClick={() => remove(table)} disabled={busy} data-testid={`button-delete-table-${table.id}`}><Trash2 size={12} /> Remove</button></div></div>; })}</div> : <div className="panel"><Empty title="A room waiting to be set" description="Add the first table to begin dine-in service." icon={<Armchair size={20} />} action={<button className="btn btn-primary" onClick={() => open(null)}>Add first table</button>} /></div>}
+     {data.tables.length ? <div className="tables-grid">{[...data.tables].map(table => { const activeOrder = data.orders.find(order => isOrderOccupyingTable(order, openDay) && order.tableId === table.id); const draft = table.id === draftTableId; const busy = !!activeOrder; return <div className="panel table-card" key={table.id} data-testid={`card-table-${table.id}`}><div className="table-card-top"><div><div className="eyebrow">FLOOR · {String(data.tables.indexOf(table) + 1).padStart(2, '0')}</div><div className="table-name">{table.name}</div><div className="table-capacity">{table.capacity} seats</div></div><span className={`badge ${busy ? 'badge-orange' : 'badge-green'}`}>{activeOrder ? `Order ${activeOrder.orderNumber}` : draft ? 'Selected · available' : 'Available'}</span></div><div className="table-actions"><button className="btn btn-sm" onClick={() => open(table)} disabled={busy} data-testid={`button-edit-table-${table.id}`}><Pencil size={12} /> Edit</button><button className="btn btn-sm btn-danger" onClick={() => remove(table)} disabled={busy} data-testid={`button-delete-table-${table.id}`}><Trash2 size={12} /> Remove</button></div></div>; })}</div> : <div className="panel"><Empty title="A room waiting to be set" description="Add the first table to begin dine-in service." icon={<Armchair size={20} />} action={<button className="btn btn-primary" onClick={() => open(null)}>Add first table</button>} /></div>}
     {editing && <Dialog title={editing === 'new' ? 'Add a table' : 'Edit table'} onClose={() => setEditing(null)}><form onSubmit={save}><div className="form-grid"><div className="field"><label htmlFor="table-name">Table name</label><input autoFocus id="table-name" className="input" value={name} onChange={event => setName(event.target.value)} data-testid="input-table-name" /></div><div className="field"><label htmlFor="table-capacity">Seats</label><input id="table-capacity" className="input" type="number" min="1" max="30" value={capacity} onChange={event => setCapacity(event.target.value)} data-testid="input-table-capacity" /></div></div>{error && <p className="validation">{error}</p>}<div className="dialog-actions" style={{ paddingRight: 0, paddingBottom: 0 }}><button type="button" className="btn" onClick={() => setEditing(null)}>Cancel</button><button className="btn btn-primary" type="submit" data-testid="button-save-table">Save table</button></div></form></Dialog>}
+  </div>;
+}
+
+interface DealDraftItem { menuItemId: string; quantity: string }
+interface DealDraft { name: string; description: string; fixedPrice: string; items: DealDraftItem[]; active: boolean }
+function DealsPage() {
+  const { data, setData, toast } = useStore();
+  const [editing, setEditing] = useState<Deal | 'new' | null>(null);
+  const [draft, setDraft] = useState<DealDraft>({ name: '', description: '', fixedPrice: '', items: [{ menuItemId: data.menuItems[0]?.id || '', quantity: '1' }], active: true });
+  const [error, setError] = useState('');
+  const open = (deal?: Deal) => {
+    setEditing(deal || 'new');
+    setDraft(deal ? {
+      name: deal.name,
+      description: deal.description || '',
+      fixedPrice: String(deal.fixedPrice),
+      items: deal.items.map(item => ({ menuItemId: item.menuItemId, quantity: String(item.quantity) })),
+      active: deal.active,
+    } : { name: '', description: '', fixedPrice: '', items: [{ menuItemId: data.menuItems[0]?.id || '', quantity: '1' }], active: true });
+    setError('');
+  };
+  const save = (event: FormEvent) => {
+    event.preventDefault();
+    const fixedPrice = Number(draft.fixedPrice);
+    const items = draft.items.map(item => {
+      const menuItem = data.menuItems.find(candidate => candidate.id === item.menuItemId);
+      return { menuItemId: item.menuItemId, quantity: Number(item.quantity), nameSnapshot: menuItem?.name || 'Removed menu item' };
+    });
+    if (!draft.name.trim() || !Number.isFinite(fixedPrice) || fixedPrice <= 0 ||
+      !items.length || items.some(item => !item.menuItemId || !Number.isInteger(item.quantity) || item.quantity <= 0)) {
+      setError('Enter a deal name, positive fixed price, and a valid whole-number quantity for every menu item.');
+      return;
+    }
+    const previous = typeof editing === 'object' ? editing : null;
+    const stamp = now();
+    const deal: Deal = {
+      id: previous?.id || makeId(),
+      name: draft.name.trim(),
+      description: draft.description.trim() || undefined,
+      fixedPrice,
+      items,
+      active: draft.active,
+      createdAt: previous?.createdAt || stamp,
+      updatedAt: stamp,
+    };
+    setData(current => ({ ...current, deals: previous
+      ? current.deals.map(entry => entry.id === previous.id ? deal : entry)
+      : [...current.deals, deal] }));
+    setEditing(null);
+    toast(previous ? 'Deal updated. Existing orders keep their saved deal details.' : 'Deal saved.');
+  };
+  const remove = (deal: Deal) => {
+    if (!window.confirm(`Delete ${deal.name}? Saved orders containing this deal will remain unchanged.`)) return;
+    setData(current => ({ ...current, deals: current.deals.filter(entry => entry.id !== deal.id) }));
+    toast('Deal deleted. Existing orders are unchanged.');
+  };
+  const setActive = (deal: Deal, active: boolean) => {
+    setData(current => ({ ...current, deals: current.deals.map(entry => entry.id === deal.id ? { ...entry, active, updatedAt: now() } : entry) }));
+    toast(active ? `${deal.name} is available in the POS.` : `${deal.name} is hidden from the POS.`);
+  };
+  const includedSummary = (deal: Deal) => deal.items.map(item => {
+    const name = data.menuItems.find(candidate => candidate.id === item.menuItemId)?.name || item.nameSnapshot || 'Removed menu item';
+    return `${item.quantity} × ${name}`;
+  }).join(' · ');
+
+  return <div className="page">
+    <PageHeader eyebrow="MANAGER · MENU OFFERS" title="Deals & combos." subtitle="Set a fixed price for a saved collection of menu items. Orders keep a snapshot if a deal changes later." action={<button className="btn btn-primary" onClick={() => open()} data-testid="button-add-deal"><Plus size={15} /> Create deal</button>} />
+    <div className="status-banner" style={{ marginBottom: 16 }}><PackagePlus size={15} /> A deal is charged once at its fixed price. Its included items are listed for the kitchen and are not added as separate paid lines.</div>
+    {data.deals.length ? <section className="panel"><div className="table-wrap"><table className="data-table"><thead><tr><th>Deal</th><th>Included items</th><th>Fixed price</th><th>Status</th><th>Actions</th></tr></thead><tbody>{data.deals.map(deal => <tr key={deal.id} data-testid={`row-deal-${deal.id}`}><td><b>{deal.name}</b>{deal.description && <div className="page-subtitle">{deal.description}</div>}</td><td>{includedSummary(deal)}</td><td className="mono">{money(deal.fixedPrice, currency(data))}</td><td><button className={`badge ${deal.active ? 'badge-green' : 'badge-muted'}`} onClick={() => setActive(deal, !deal.active)} data-testid={`toggle-deal-${deal.id}`}>{deal.active ? 'Active' : 'Inactive'}</button></td><td><div className="expense-actions"><button className="btn btn-sm" onClick={() => open(deal)} data-testid={`edit-deal-${deal.id}`}><Pencil size={12} /> Edit</button><button className="btn btn-sm btn-danger" onClick={() => remove(deal)} data-testid={`delete-deal-${deal.id}`}><Trash2 size={12} /> Delete</button></div></td></tr>)}</tbody></table></div></section>
+      : <section className="panel"><Empty title="No deals yet" description="Create a fixed-price offer to make it available to cashiers in the POS." icon={<PackagePlus size={20} />} action={<button className="btn btn-primary" onClick={() => open()}>Create first deal</button>} /></section>}
+    {editing && <Dialog title={editing === 'new' ? 'Create deal' : `Edit deal · ${editing.name}`} onClose={() => setEditing(null)} wide><form onSubmit={save} data-testid="form-deal">
+      <div className="form-grid">
+        <div className="field"><label htmlFor="deal-name">Deal name *</label><input id="deal-name" className="input" value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} required data-testid="input-deal-name" /></div>
+        <div className="field"><label htmlFor="deal-price">Fixed price (PKR) *</label><input id="deal-price" type="number" min="0.01" step="0.01" className="input" value={draft.fixedPrice} onChange={event => setDraft(current => ({ ...current, fixedPrice: event.target.value }))} required data-testid="input-deal-price" /></div>
+        <div className="field span-2"><label htmlFor="deal-description">Description (optional)</label><input id="deal-description" className="input" value={draft.description} onChange={event => setDraft(current => ({ ...current, description: event.target.value }))} data-testid="input-deal-description" /></div>
+        <div className="field span-2"><label className="check-setting"><input type="checkbox" checked={draft.active} onChange={event => setDraft(current => ({ ...current, active: event.target.checked }))} data-testid="input-deal-active" /> Available to cashiers</label></div>
+      </div>
+      <div className="deal-editor-items"><div className="panel-head"><h3 className="panel-title">Included menu items</h3><button type="button" className="btn btn-sm" onClick={() => setDraft(current => ({ ...current, items: [...current.items, { menuItemId: data.menuItems[0]?.id || '', quantity: '1' }] }))} disabled={!data.menuItems.length} data-testid="button-add-deal-item"><Plus size={13} /> Add item</button></div>
+        {draft.items.map((item, index) => <div className="deal-editor-row" key={`${index}-${item.menuItemId}`}><div className="field"><label htmlFor={`deal-item-${index}`}>Menu item</label><select id={`deal-item-${index}`} className="select" value={item.menuItemId} onChange={event => setDraft(current => ({ ...current, items: current.items.map((entry, entryIndex) => entryIndex === index ? { ...entry, menuItemId: event.target.value } : entry) }))} data-testid={`select-deal-item-${index}`}><option value="">Choose item</option>{data.menuItems.map(menuItem => <option value={menuItem.id} key={menuItem.id}>{menuItem.name}</option>)}</select></div><div className="field"><label htmlFor={`deal-qty-${index}`}>Quantity</label><input id={`deal-qty-${index}`} className="input" type="number" min="1" step="1" value={item.quantity} onChange={event => setDraft(current => ({ ...current, items: current.items.map((entry, entryIndex) => entryIndex === index ? { ...entry, quantity: event.target.value } : entry) }))} data-testid={`input-deal-qty-${index}`} /></div><button type="button" className="btn btn-quiet btn-sm" aria-label={`Remove deal item ${index + 1}`} disabled={draft.items.length === 1} onClick={() => setDraft(current => ({ ...current, items: current.items.filter((_, entryIndex) => entryIndex !== index) }))}><Trash2 size={14} /></button></div>)}
+      </div>
+      {error && <p className="validation" role="alert">{error}</p>}
+      <div className="dialog-actions" style={{ paddingRight: 0, paddingBottom: 0 }}><button type="button" className="btn" onClick={() => setEditing(null)}>Cancel</button><button className="btn btn-primary" type="submit" data-testid="button-save-deal">Save deal</button></div>
+    </form></Dialog>}
+  </div>;
+}
+
+function dayOrders(day: BusinessDay, data: AppData): Order[] {
+  return data.orders.filter(order => order.businessDayId === day.id ||
+    (!order.businessDayId && businessDateForTimestamp(order.createdAt) === day.businessDate));
+}
+function dayExpenses(day: BusinessDay, data: AppData): Expense[] {
+  return data.expenses.filter(expense => expense.businessDayId === day.id ||
+    (!expense.businessDayId && businessDateForTimestamp(expense.dateTime) === day.businessDate));
+}
+function BusinessDaySummary({ day, data }: { day: BusinessDay; data: AppData }) {
+  const orders = dayOrders(day, data);
+  const paidOrders = orders.filter(order => order.status === 'paid');
+  const payments = data.payments.filter(payment => paidOrders.some(order => order.id === payment.orderId) && payment.status === 'paid');
+  const expenses = dayExpenses(day, data);
+  const sales = paidOrders.reduce((sum, order) => sum + order.total, 0);
+  const cash = payments.filter(payment => payment.method === 'Cash').reduce((sum, payment) => sum + payment.amount, 0);
+  return <div className="day-summary-grid">
+    <div><span>Orders</span><b>{orders.length}</b><small>{paidOrders.length} completed · {orders.filter(order => order.status === 'cancelled').length} cancelled</small></div>
+    <div><span>Sales</span><b>{money(sales, currency(data))}</b><small>{payments.length} saved payments</small></div>
+    <div><span>Payment methods</span><b>{money(cash, currency(data))} cash</b><small>{(['Card', 'Easypaisa', 'JazzCash', 'Other'] as PaymentMethod[]).map(method => `${method} ${money(payments.filter(payment => payment.method === method).reduce((sum, payment) => sum + payment.amount, 0), currency(data))}`).join(' · ')}</small></div>
+    <div><span>Expenses</span><b>{money(expenses.reduce((sum, expense) => sum + expense.total, 0), currency(data))}</b><small>{expenses.length} saved records</small></div>
+  </div>;
+}
+function BusinessDayPage() {
+  const { data, setData, user, recoveryDetected, setRecoveryDetected, toast } = useStore();
+  const openDay = activeBusinessDay(data.businessDays);
+  const [openingCash, setOpeningCash] = useState('');
+  const [closingCash, setClosingCash] = useState('');
+  const [ending, setEnding] = useState(false);
+  const [error, setError] = useState('');
+  const begin = () => {
+    if (user?.role !== 'Manager') return;
+    if (activeBusinessDay(data.businessDays)) { toast('A business day is already open.'); return; }
+    if (openingCash.trim() && (!Number.isFinite(Number(openingCash)) || Number(openingCash) < 0)) { setError('Opening cash must be zero or more.'); return; }
+    const startedAt = now();
+    const day: BusinessDay = { id: makeId(), businessDate: businessDateForTimestamp(startedAt), startAt: startedAt, startedBy: user.name, openingCash: openingCash.trim() ? Number(openingCash) : undefined, status: 'open' };
+    setData(current => activeBusinessDay(current.businessDays) ? current : ({ ...current, businessDays: [...current.businessDays, day] }));
+    setOpeningCash('');
+    setError('');
+    setRecoveryDetected(false);
+    toast(`Business day ${day.businessDate} started.`);
+  };
+  const finish = () => {
+    if (user?.role !== 'Manager' || !openDay) return;
+    if (closingCash.trim() && (!Number.isFinite(Number(closingCash)) || Number(closingCash) < 0)) { setError('Closing cash must be zero or more.'); return; }
+    const endedAt = now();
+    setData(current => ({ ...current, businessDays: current.businessDays.map(day => day.id === openDay.id ? closeBusinessDay(day, user.name, endedAt, closingCash.trim() ? Number(closingCash) : undefined) : day) }));
+    setEnding(false);
+    setClosingCash('');
+    setError('');
+    setRecoveryDetected(false);
+    toast(`Business day ${openDay.businessDate} ended. Orders and records were preserved.`);
+  };
+  return <div className="page">
+    <PageHeader eyebrow="MANAGER · SERVICE SESSION" title="Business day." subtitle="A restaurant day runs from the explicit morning start through the overnight close. Orders are assigned to the open local business day." />
+    {recoveryDetected && <div className="recovery-card" role="status"><AlertCircle size={18} /><div><b>Previous register session ended unexpectedly.</b><p>{openDay ? `Business day ${openDay.businessDate} is still open. Saved orders and records remain available; an unfinished cart cannot be recovered, and the exact shutdown time is unknown.` : 'No business day is open. Saved orders and records remain available; an unfinished cart cannot be recovered.'}</p></div><button className="btn btn-sm" onClick={() => { setRecoveryDetected(false); toast(openDay ? 'Continuing the saved open business day.' : 'Recovery notice dismissed.'); }} data-testid="button-resume-business-day">{openDay ? 'Resume open day' : 'Acknowledge'}</button></div>}
+    {openDay ? <section className="panel business-day-panel">
+      <div className="panel-head"><div><div className="eyebrow">CURRENTLY OPEN</div><h2 className="panel-title">Business day · {openDay.businessDate}</h2></div><span className="badge badge-green">Open</span></div>
+      <div className="business-day-meta"><span>Started {new Date(openDay.startAt).toLocaleString()} by {openDay.startedBy}</span><span>Opening cash: {openDay.openingCash === undefined ? 'Not recorded' : money(openDay.openingCash, currency(data))}</span><span>Register timezone · {Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time'}</span></div>
+      <BusinessDaySummary day={openDay} data={data} />
+      <div className="business-day-actions"><p className="page-subtitle">Ending the day prevents new orders from using it. Saved records are never deleted.</p><button className="btn btn-danger" onClick={() => { setClosingCash(''); setError(''); setEnding(true); }} data-testid="button-end-day"><Check size={14} /> End Day</button></div>
+    </section> : <section className="panel business-day-panel">
+      <div className="panel-head"><div><div className="eyebrow">NO OPEN SERVICE DAY</div><h2 className="panel-title">Start the next business day</h2></div><span className="badge badge-muted">Closed</span></div>
+      <div className="business-day-meta"><span>Default business date is the local date. Orders from 12:00–2:59 AM are assigned to the prior date.</span><span>Start time is recorded as entered; a late start does not alter saved timestamps.</span></div>
+      <div className="business-day-actions"><div className="field opening-cash-field"><label htmlFor="opening-cash">Opening cash (optional)</label><input id="opening-cash" type="number" min="0" step="0.01" className="input" value={openingCash} onChange={event => setOpeningCash(event.target.value)} data-testid="input-opening-cash" /></div><button className="btn btn-primary" onClick={begin} data-testid="button-start-day"><Plus size={14} /> Start Day</button></div>
+      {error && <p className="validation" role="alert">{error}</p>}
+    </section>}
+    <section className="panel business-day-history"><div className="panel-head"><div><div className="eyebrow">SAVED DAY RECORDS</div><h2 className="panel-title">Business-day history</h2></div><span className="badge">{data.businessDays.length} days</span></div>{data.businessDays.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Business date</th><th>Started</th><th>Started by</th><th>Ended</th><th>Ended by</th><th>Closing cash</th><th>Status</th></tr></thead><tbody>{[...data.businessDays].reverse().map(day => <tr key={day.id} data-testid={`row-business-day-${day.id}`}><td>{day.businessDate}</td><td>{new Date(day.startAt).toLocaleString()}</td><td>{day.startedBy}</td><td>{day.endAt ? new Date(day.endAt).toLocaleString() : '—'}</td><td>{day.endedBy || '—'}</td><td>{day.closingCash === undefined ? '—' : money(day.closingCash, currency(data))}</td><td><span className={`badge ${day.status === 'open' ? 'badge-green' : 'badge-muted'}`}>{day.status}</span></td></tr>)}</tbody></table></div> : <Empty title="No business days saved" description="Start Day to open the first service period." icon={<CalendarDays size={20} />} />}</section>
+    {ending && openDay && <Dialog title={`End business day · ${openDay.businessDate}`} onClose={() => setEnding(false)} wide><div className="callout">Review this shift summary before closing. Closing is recorded with the current time and your account. New orders require another explicit Start Day.</div><BusinessDaySummary day={openDay} data={data} /><div className="field" style={{ marginTop: 15 }}><label htmlFor="closing-cash">Closing cash (optional)</label><input id="closing-cash" type="number" min="0" step="0.01" className="input" value={closingCash} onChange={event => setClosingCash(event.target.value)} data-testid="input-closing-cash" /></div>{error && <p className="validation" role="alert">{error}</p>}<div className="dialog-actions" style={{ paddingRight: 0, paddingBottom: 0 }}><button className="btn" onClick={() => setEnding(false)}>Keep day open</button><button className="btn btn-danger" onClick={finish} data-testid="button-confirm-end-day">Confirm End Day</button></div></Dialog>}
   </div>;
 }
 
@@ -261,7 +464,8 @@ function MenuPage() {
 }
 
 function OrdersPage() {
-  const { data, setData, toast } = useStore();
+  const { data, setData, toast, user } = useStore();
+  const openDay = activeBusinessDay(data.businessDays);
   const [query, setQuery] = useState('');
   const [type, setType] = useState('all');
   const [method, setMethod] = useState('all');
@@ -281,11 +485,18 @@ function OrdersPage() {
     setSelected({ ...order, status: 'cancelled', updatedAt: now() });
     toast(`${order.orderNumber} marked cancelled.`);
   };
+  const releaseTable = (order: Order) => {
+    if (!isOrderOccupyingTable(order, openDay)) return;
+    const releasedAt = now();
+    setData(current => ({ ...current, orders: current.orders.map(entry => entry.id === order.id ? { ...entry, tableReleasedAt: releasedAt, updatedAt: releasedAt } : entry) }));
+    setSelected({ ...order, tableReleasedAt: releasedAt, updatedAt: releasedAt });
+    toast(`${order.tableNameSnapshot || 'Table'} is available again.`);
+  };
   return <div className="page"><PageHeader eyebrow="LOCAL ORDER BOOK" title="Order history." subtitle="Find a ticket, review what was served, or print another browser receipt." />
     <div className="toolbar"><div className="search-wrap" style={{ flex: 1 }}><Search /><input className="input" value={query} onChange={event => setQuery(event.target.value)} placeholder="Ticket number, customer, phone or table" aria-label="Search orders" data-testid="input-orders-search" /></div><select className="select filter-select" value={type} onChange={event => setType(event.target.value)} aria-label="Filter order type" data-testid="filter-order-type"><option value="all">All types</option><option>Dine-in</option><option>Takeaway</option><option>Delivery</option></select><select className="select filter-select" value={method} onChange={event => setMethod(event.target.value)} aria-label="Filter payment method"><option value="all">All payment methods</option>{(['Cash','Card','Easypaisa','JazzCash','Other'] as PaymentMethod[]).map(value => <option key={value}>{value}</option>)}</select><select className="select filter-select" value={date} onChange={event => setDate(event.target.value)} aria-label="Filter date" data-testid="filter-order-date"><option value="all">Any date</option><option value="today">Today</option><option value="7days">Last 7 days</option></select><select className="select filter-select" value={status} onChange={event => setStatus(event.target.value)} aria-label="Filter order status" data-testid="filter-order-status"><option value="all">Any status</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select></div>
     <section className="panel"><div className="panel-head"><div><div className="eyebrow">TICKETS SAVED HERE</div><h2 className="panel-title">Order book</h2></div><span className="badge">{rows.length} {rows.length === 1 ? 'ticket' : 'tickets'}</span></div>{rows.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Ticket</th><th>Date & time</th><th>Type</th><th>Customer / table</th><th>Payment</th><th>Total</th><th>Status</th><th /></tr></thead><tbody>{rows.map(order => <tr key={order.id} data-testid={`row-order-${order.id}`}><td><button className="btn btn-quiet btn-sm mono" onClick={() => setSelected(order)} data-testid={`button-view-order-${order.id}`}>{order.orderNumber}</button></td><td>{new Date(order.createdAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td><td>{order.type}</td><td>{order.tableNameSnapshot || order.customerName || 'Walk-in'}</td><td>{order.payment?.method || '—'}</td><td className="mono">{money(order.total, currency(data))}</td><td><span className={`badge ${order.status === 'paid' ? 'badge-green' : 'badge-orange'}`}>{order.status}</span></td><td><button className="btn btn-sm" onClick={() => setSelected(order)} data-testid={`button-details-${order.id}`}>Details</button></td></tr>)}</tbody></table></div> : <Empty title={query || type !== 'all' || date !== 'all' || status !== 'all' ? 'No tickets match these filters' : 'Your order book is empty'} description={query || type !== 'all' || date !== 'all' || status !== 'all' ? 'Clear a filter or try another search.' : 'Paid orders will appear here after checkout.'} icon={<ClipboardList size={20} />} action={query || type !== 'all' || date !== 'all' || status !== 'all' ? <button className="btn btn-sm" onClick={() => { setQuery(''); setType('all'); setDate('all'); setStatus('all'); }}>Clear filters</button> : undefined} />}</section>
     <p className="page-subtitle" style={{ marginTop: 13, display: 'flex', gap: 7, alignItems: 'center' }}><Printer size={13} /> Print uses the browser's print dialog only.</p>
-    {selected && <Dialog title={`Ticket ${selected.orderNumber}`} onClose={() => setSelected(null)} wide><div className="order-detail-grid"><section><div className="detail-kicker">ORDER DETAILS</div><p><b>Order status</b><br /><span className={`badge ${selected.status === 'paid' ? 'badge-green' : 'badge-orange'}`}>{selected.status}</span></p><p><b>Order type</b><br />{selected.type}</p><p><b>Customer / table</b><br />{selected.tableNameSnapshot || selected.customerName || 'Walk-in'}{selected.customerPhone ? ` · ${selected.customerPhone}` : ''}</p>{selected.deliveryAddress && <p><b>Delivery address</b><br />{selected.deliveryAddress}</p>}<p><b>Cashier</b><br />{selected.cashierName}</p><p><b>Payment</b><br />{data.payments.find(payment => payment.orderId === selected.id)?.method || selected.payment?.method || '—'} · {data.payments.find(payment => payment.orderId === selected.id)?.status || selected.status}</p></section><section><div className="detail-kicker">SAVED ITEM SNAPSHOTS</div><div className="table-wrap"><table className="data-table"><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Line total</th></tr></thead><tbody>{selected.items.map((item,index) => <tr key={`${item.menuItemId}-${index}`}><td>{item.name}{item.note && <small className="item-note-detail"> · {item.note}</small>}</td><td>{item.quantity}</td><td>{money(item.unitPrice,currency(data))}</td><td>{money(item.lineTotal,currency(data))}</td></tr>)}</tbody></table></div><div className="detail-totals"><span>Subtotal <b>{money(selected.subtotal,currency(data))}</b></span><span>Discount <b>− {money(selected.discount,currency(data))}</b></span><span>Delivery <b>{money(selected.deliveryCharge,currency(data))}</b></span><strong>Total <b>{money(selected.total,currency(data))}</b></strong></div></section></div><div className="receipt-detail"><Receipt order={selected} data={data} /></div><div className="dialog-actions" style={{ paddingBottom: 0 }}><button className="btn" onClick={() => printReceipt()} data-testid="button-reprint-order"><Printer size={14} /> Print / reprint</button>{selected.status === 'paid' && <button className="btn btn-danger" onClick={() => cancel(selected)} data-testid="button-cancel-order"><X size={14} /> Cancel order</button>}<button className="btn btn-primary" onClick={() => setSelected(null)}>Done</button></div></Dialog>}
+     {selected && <Dialog title={`Ticket ${selected.orderNumber}`} onClose={() => setSelected(null)} wide><div className="order-detail-grid"><section><div className="detail-kicker">ORDER DETAILS</div><p><b>Order status</b><br /><span className={`badge ${selected.status === 'paid' ? 'badge-green' : 'badge-orange'}`}>{selected.status}</span></p><p><b>Order type</b><br />{selected.type}</p><p><b>Customer / table</b><br />{selected.tableNameSnapshot || selected.customerName || 'Walk-in'}{selected.customerPhone ? ` · ${selected.customerPhone}` : ''}</p>{selected.deliveryAddress && <p><b>Delivery address</b><br />{selected.deliveryAddress}</p>}<p><b>Cashier</b><br />{selected.cashierName}</p><p><b>Payment</b><br />{data.payments.find(payment => payment.orderId === selected.id)?.method || selected.payment?.method || '—'} · {data.payments.find(payment => payment.orderId === selected.id)?.status || selected.status}</p><p><b>Business day</b><br />{selected.businessDayId ? data.businessDays.find(day => day.id === selected.businessDayId)?.businessDate || 'Saved day record unavailable' : businessDateForTimestamp(selected.createdAt)}</p></section><section><div className="detail-kicker">SAVED ITEM SNAPSHOTS</div><div className="table-wrap"><table className="data-table"><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Line total</th></tr></thead><tbody>{selected.items.map((item,index) => <tr key={`${item.menuItemId}-${index}`}><td>{item.name}{item.note && <small className="item-note-detail"> · {item.note}</small>}</td><td>{item.quantity}</td><td>{money(item.unitPrice,currency(data))}</td><td>{money(item.lineTotal,currency(data))}</td></tr>)}{(selected.deals || []).map((deal,index) => <tr key={`${deal.dealId}-${index}`}><td><b>{deal.name}</b><small className="item-note-detail">Includes {deal.items.map(item => `${item.quantity * deal.quantity} × ${item.name}`).join(', ')}</small></td><td>{deal.quantity} deals</td><td>{money(deal.unitPrice,currency(data))}</td><td>{money(deal.lineTotal,currency(data))}</td></tr>)}</tbody></table></div><div className="detail-totals"><span>Subtotal <b>{money(selected.subtotal,currency(data))}</b></span><span>Discount <b>− {money(selected.discount,currency(data))}</b></span><span>Delivery <b>{money(selected.deliveryCharge,currency(data))}</b></span><strong>Total <b>{money(selected.total,currency(data))}</b></strong></div></section></div><div className="receipt-detail"><Receipt order={selected} data={data} /></div><div className="dialog-actions" style={{ paddingBottom: 0 }}><button className="btn" onClick={() => printReceipt()} data-testid="button-reprint-order"><Printer size={14} /> Print / reprint</button><button className="btn" onClick={() => printKitchenToken(selected, data.settings)} data-testid="button-print-kitchen-token"><Printer size={14} /> Print Kitchen Token</button>{isOrderOccupyingTable(selected, openDay) && <button className="btn" onClick={() => releaseTable(selected)} data-testid="button-release-table"><Armchair size={14} /> Free table</button>}{selected.status === 'paid' && <button className="btn btn-danger" onClick={() => cancel(selected)} data-testid="button-cancel-order"><X size={14} /> Cancel order</button>}<button className="btn btn-primary" onClick={() => setSelected(null)}>Done</button></div></Dialog>}
   </div>;
 }
 
@@ -304,14 +515,15 @@ function PaymentsPage() {
   const [type, setType] = useState('all');
   const [query, setQuery] = useState('');
   const methods: PaymentMethod[] = ['Cash', 'Card', 'Easypaisa', 'JazzCash', 'Other'];
-  const start = periodStart(period);
+  const { startDate, endDate } = businessDatePeriodRange(period, data);
   const rows = data.payments
     .flatMap(payment => {
       const order = data.orders.find(entry => entry.id === payment.orderId);
       return order ? [{ payment, order }] : [];
     })
     .filter(({ payment, order }) =>
-      new Date(payment.dateTime).getTime() >= start &&
+      businessDateForRecord(order.createdAt, order.businessDayId, data) >= startDate &&
+      businessDateForRecord(order.createdAt, order.businessDayId, data) <= endDate &&
       (method === 'all' || payment.method === method) &&
       (type === 'all' || order.type === type) &&
       (!query || `${payment.id} ${payment.orderId} ${order.orderNumber} ${order.customerName || ''} ${order.tableNameSnapshot || ''} ${payment.reference || ''}`.toLowerCase().includes(query.toLowerCase())),
@@ -354,12 +566,13 @@ function PaymentsPage() {
         {rows.length ? (
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Payment ID</th><th>Order ID / number</th><th>Date & time</th><th>Type</th><th>Customer / table</th><th>Method</th><th>Amount</th><th>Cash received</th><th>Change</th><th>Reference</th><th>Payment status</th><th>Order status</th></tr></thead>
+              <thead><tr><th>Payment ID</th><th>Order ID / number</th><th>Date & time</th><th>Business day</th><th>Type</th><th>Customer / table</th><th>Method</th><th>Amount</th><th>Cash received</th><th>Change</th><th>Reference</th><th>Payment status</th><th>Order status</th></tr></thead>
               <tbody>{rows.map(({ payment, order }) => (
                 <tr key={payment.id} data-testid={`row-payment-${payment.id}`}>
                   <td className="mono">{payment.id}</td>
                   <td><div className="mono">{order.id}</div><small>{order.orderNumber}</small></td>
                   <td>{new Date(payment.dateTime).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
+                  <td>{businessDateForRecord(order.createdAt, order.businessDayId, data)}</td>
                   <td>{order.type}</td>
                   <td>{order.tableNameSnapshot || order.customerName || 'Walk-in'}</td>
                   <td>{payment.method}</td>
@@ -400,29 +613,13 @@ function ExpensesPage() {
   const [draft, setDraft] = useState<ExpenseDraft>(emptyExpenseDraft);
   const [formError, setFormError] = useState('');
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayEnd = new Date(today);
-  todayEnd.setDate(todayEnd.getDate() + 1);
-  const weekStart = new Date(today);
-  weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekEnd.getDate() + 7);
-  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
-  const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-  let start = 0;
-  let end = Infinity;
-  if (period === 'today') { start = today.getTime(); end = todayEnd.getTime(); }
-  if (period === 'week') { start = weekStart.getTime(); end = weekEnd.getTime(); }
-  if (period === 'month') { start = monthStart.getTime(); end = monthEnd.getTime(); }
-  if (period === 'custom') {
-    if (fromDate) start = new Date(`${fromDate}T00:00:00`).getTime();
-    if (toDate) { const endDate = new Date(`${toDate}T00:00:00`); endDate.setDate(endDate.getDate() + 1); end = endDate.getTime(); }
-  }
-  const invalidRange = period === 'custom' && !!fromDate && !!toDate && start >= end;
+  const defaultRange = businessDatePeriodRange(period, data);
+  const startDate = period === 'custom' ? fromDate || '0000-01-01' : defaultRange.startDate;
+  const endDate = period === 'custom' ? toDate || '9999-12-31' : defaultRange.endDate;
+  const invalidRange = period === 'custom' && !!fromDate && !!toDate && startDate > endDate;
   const rows = [...data.expenses].filter(expense => {
-    const time = new Date(expense.dateTime).getTime();
-    return !invalidRange && time >= start && time < end &&
+    const businessDate = businessDateForRecord(expense.dateTime, expense.businessDayId, data);
+    return !invalidRange && businessDate >= startDate && businessDate <= endDate &&
       (category === 'all' || expense.category === category) &&
       (method === 'all' || expense.paymentMethod === method);
   }).sort((a, b) => b.dateTime.localeCompare(a.dateTime));
@@ -458,9 +655,15 @@ function ExpensesPage() {
     }
     const existing = typeof editing === 'object' ? editing : null;
     const stamp = now();
+    const expenseBusinessDate = businessDateForTimestamp(date);
+    const activeDay = activeBusinessDay(data.businessDays);
+    const expenseBusinessDay = activeDay?.businessDate === expenseBusinessDate
+      ? activeDay
+      : data.businessDays.find(day => day.businessDate === expenseBusinessDate);
     const expense: Expense = {
       id: existing?.id || `EXP-${makeId().toUpperCase()}`,
       dateTime: date.toISOString(),
+      businessDayId: expenseBusinessDay?.id,
       purpose: draft.purpose.trim(),
       category: draft.category,
       quantity: draft.directTotal ? 1 : quantity,
@@ -528,11 +731,12 @@ function ExpensesPage() {
         {rows.length ? (
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Expense ID</th><th>Date</th><th>Item / purpose</th><th>Category</th><th>Amount</th><th>Payment</th><th>Added by</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Expense ID</th><th>Date</th><th>Business day</th><th>Item / purpose</th><th>Category</th><th>Amount</th><th>Payment</th><th>Added by</th><th>Actions</th></tr></thead>
               <tbody>{rows.map(expense => (
                 <tr key={expense.id} data-testid={`row-expense-${expense.id}`}>
                   <td className="mono">{expense.id}</td>
                   <td>{new Date(expense.dateTime).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                  <td>{businessDateForRecord(expense.dateTime, expense.businessDayId, data)}</td>
                   <td>{expense.purpose}</td>
                   <td>{expense.category}</td>
                   <td className="mono">{money(expense.total, currency(data))}</td>
@@ -595,17 +799,23 @@ function ExpensesPage() {
   );
 }
 
-function periodStart(period: string) {
-  const date = new Date(); date.setHours(0,0,0,0);
-  if (period === 'today') return date.getTime();
-  if (period === 'week') { date.setDate(date.getDate()-6); return date.getTime(); }
-  if (period === 'month') { date.setDate(1); return date.getTime(); }
-  return 0;
+function businessDatePeriodRange(period: string, data: Pick<AppData, 'businessDays'>) {
+  const today = activeBusinessDay(data.businessDays)?.businessDate || businessDateForTimestamp(new Date());
+  const date = new Date(`${today}T12:00:00`);
+  if (period === 'today') return { startDate: today, endDate: today };
+  if (period === 'week') {
+    date.setDate(date.getDate() - 6);
+    return { startDate: localDateKey(date), endDate: today };
+  }
+  if (period === 'month') {
+    return { startDate: localDateKey(new Date(date.getFullYear(), date.getMonth(), 1)), endDate: today };
+  }
+  return { startDate: '0000-01-01', endDate: '9999-12-31' };
 }
 
 function ReportsPage() {
   const { data, toast } = useStore();
-  const todayKey = localDateKey(new Date());
+  const todayKey = activeBusinessDay(data.businessDays)?.businessDate || businessDateForTimestamp(new Date());
   const [period, setPeriod] = useState<ReportPeriod>('today');
   const [customStart, setCustomStart] = useState(todayKey);
   const [customEnd, setCustomEnd] = useState(todayKey);
@@ -640,7 +850,7 @@ function ReportsPage() {
   );
 
   const generateReport = () => {
-    const anchorDate = new Date();
+    const anchorDate = new Date(`${activeBusinessDay(data.businessDays)?.businessDate || businessDateForTimestamp(new Date())}T12:00:00`);
     try {
       resolveReportDateRange(period, anchorDate, customStart, customEnd);
       setApplied({
@@ -996,12 +1206,23 @@ function SettingsPage() {
 }
 
 interface CartEntry { item: MenuItem; quantity: number; note: string }
+interface CartDealEntry { deal: OrderDeal; quantity: number }
+function QuantityField({ value, onCommit, label, testId }: { value: number; onCommit: (next: number) => void; label: string; testId: string }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+  const commit = () => {
+    if (/^[1-9]\d*$/.test(draft) && Number.isSafeInteger(Number(draft))) onCommit(Number(draft));
+    else setDraft(String(value));
+  };
+  return <input className="input qty-entry" type="text" inputMode="numeric" aria-label={`${label} quantity`} value={draft} onChange={event => setDraft(event.target.value)} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); commit(); (event.currentTarget as HTMLInputElement).blur(); } }} data-testid={testId} />;
+}
 function PosPage() {
-  const { data, setData, user, draftTableId, setDraftTableId, toast } = useStore();
+  const { data, setData, user, draftTableId, setDraftTableId, recoveryDetected, toast } = useStore();
   const [type, setType] = useState<OrderType>('Dine-in');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartEntry[]>([]);
+  const [cartDeals, setCartDeals] = useState<CartDealEntry[]>([]);
   const [discount, setDiscount] = useState('0');
   const [deliveryCharge, setDeliveryCharge] = useState('0');
   const [customerName, setCustomerName] = useState('');
@@ -1013,21 +1234,58 @@ function PosPage() {
   const [received, setReceived] = useState('');
   const [reference, setReference] = useState('');
   const [completed, setCompleted] = useState<Order | null>(null);
+  const openDay = activeBusinessDay(data.businessDays);
+  const occupied = useMemo(() => occupiedTableIds(data.orders, openDay), [data.orders, openDay]);
+  const availableTables = useMemo(() => data.tables.filter(table => !occupied.has(table.id)), [data.tables, occupied]);
   const categories = [...data.categories].sort((a, b) => a.sortOrder - b.sortOrder);
   const items = data.menuItems.filter(item => item.available && (selectedCategory === 'all' || item.categoryId === selectedCategory) && `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()));
-  const subtotal = cart.reduce((sum, entry) => sum + entry.item.price * entry.quantity, 0);
+  const activeDeals = data.deals.filter(deal => deal.active);
+  const subtotal = cart.reduce((sum, entry) => sum + entry.item.price * entry.quantity, 0) +
+    cartDeals.reduce((sum, entry) => sum + entry.deal.unitPrice * entry.quantity, 0);
+  const itemCount = cart.reduce((sum, entry) => sum + entry.quantity, 0) + cartDeals.reduce((sum, entry) => sum + entry.quantity, 0);
+  const hasCart = cart.length > 0 || cartDeals.length > 0;
   const parsedDiscount = Math.max(0, Math.min(subtotal, Number(discount) || 0));
   const charge = type === 'Delivery' ? Math.max(0, Number(deliveryCharge) || 0) : 0;
   const total = subtotal - parsedDiscount + charge;
+  useEffect(() => {
+    if (type !== 'Dine-in' || completed) return;
+    const validSelection = availableTables.some(table => table.id === draftTableId);
+    if (!validSelection) setDraftTableId(nextAvailableTableId(availableTables, new Set()));
+  }, [type, completed, availableTables, draftTableId, setDraftTableId]);
   const addItem = (item: MenuItem) => setCart(current => { const found = current.find(entry => entry.item.id === item.id); return found ? current.map(entry => entry.item.id === item.id ? { ...entry, quantity: entry.quantity + 1 } : entry) : [...current, { item, quantity: 1, note: '' }]; });
-  const updateQuantity = (id: string, diff: number) => setCart(current => current.map(entry => entry.item.id === id ? { ...entry, quantity: entry.quantity + diff } : entry).filter(entry => entry.quantity > 0));
+  const updateQuantity = (id: string, quantity: number) => setCart(current => current.map(entry => entry.item.id === id ? { ...entry, quantity } : entry));
+  const adjustQuantity = (id: string, diff: number) => setCart(current => current.map(entry => entry.item.id === id ? { ...entry, quantity: entry.quantity + diff } : entry).filter(entry => entry.quantity > 0));
+  const addDeal = (deal: Deal) => {
+    const snapshot: OrderDeal = {
+      dealId: deal.id,
+      name: deal.name,
+      description: deal.description,
+      unitPrice: deal.fixedPrice,
+      quantity: 1,
+      lineTotal: deal.fixedPrice,
+      items: deal.items.map(line => ({
+        menuItemId: line.menuItemId,
+        name: data.menuItems.find(item => item.id === line.menuItemId)?.name || line.nameSnapshot || 'Removed menu item',
+        quantity: line.quantity,
+      })),
+    };
+    setCartDeals(current => {
+      const existing = current.find(entry => entry.deal.dealId === deal.id);
+      return existing
+        ? current.map(entry => entry.deal.dealId === deal.id ? { ...entry, quantity: entry.quantity + 1 } : entry)
+        : [...current, { deal: snapshot, quantity: 1 }];
+    });
+  };
   const complete = () => {
-    if (cart.length === 0) return;
-    if (type === 'Dine-in' && !draftTableId) { toast('Choose a table before checking out.'); return; }
+    if (!openDay) { toast('Start a business day before taking new orders.'); setCheckout(false); return; }
+    if (!hasCart) return;
+    if (type === 'Dine-in' && !draftTableId) { toast(availableTables.length ? 'Choose an available table before checkout.' : 'No tables are available. Free a table or add a configured table.'); return; }
+    if (type === 'Dine-in' && draftTableId && occupied.has(draftTableId)) { setDraftTableId(nextAvailableTableId(availableTables, new Set())); toast('That table was just assigned to another order. Choose an available table.'); return; }
     if (type === 'Delivery' && (!customerName.trim() || !customerPhone.trim() || !deliveryAddress.trim())) { toast('Add the delivery name, phone and address.'); return; }
     const cashReceived = method === 'Cash' ? Number(received) : total;
     if (method === 'Cash' && cashReceived < total) { toast('Cash received must cover the total.'); return; }
-    const table = data.tables.find(entry => entry.id === draftTableId);
+    const table = type === 'Dine-in' ? data.tables.find(entry => entry.id === draftTableId && !occupied.has(entry.id)) : undefined;
+    if (type === 'Dine-in' && !table) { toast('Select an available table before checkout.'); return; }
     const createdAt = now();
     const orderId = makeId();
     const payment: Payment = {
@@ -1036,70 +1294,56 @@ function PosPage() {
       change: method === 'Cash' ? cashReceived - total : undefined,
       reference: reference.trim() || undefined,
     };
+    const deals = cartDeals.map(entry => ({ ...entry.deal, quantity: entry.quantity, lineTotal: entry.deal.unitPrice * entry.quantity }));
     const order: Order = {
-      id: orderId, orderNumber: `JH-${String(data.orders.length + 1).padStart(4, '0')}`, createdAt, updatedAt: createdAt, type, status: 'paid', tableId: type === 'Dine-in' ? table?.id : undefined, tableNameSnapshot: type === 'Dine-in' ? table?.name : undefined,
+      id: orderId, orderNumber: `JH-${String(data.orders.length + 1).padStart(4, '0')}`, createdAt, updatedAt: createdAt, type, status: 'paid', businessDayId: openDay.id, tableId: table?.id, tableNameSnapshot: table?.name,
       customerName: customerName.trim() || undefined, customerPhone: customerPhone.trim() || undefined, deliveryAddress: deliveryAddress.trim() || undefined, notes: orderNotes.trim() || undefined, subtotal, discount: parsedDiscount, deliveryCharge: charge, total, cashierName: user?.name || 'Cashier',
       items: cart.map(entry => ({ menuItemId: entry.item.id, name: entry.item.name, unitPrice: entry.item.price, quantity: entry.quantity, lineTotal: entry.item.price * entry.quantity, note: entry.note || undefined })),
+      deals,
       payment,
     };
     setData(current => ({ ...current, orders: [...current.orders, order], payments: [...current.payments.filter(entry => entry.orderId !== orderId), payment] }));
-    setCompleted(order); setCheckout(false); setCart([]); setDiscount('0'); setDeliveryCharge('0'); setCustomerName(''); setCustomerPhone(''); setDeliveryAddress(''); setOrderNotes(''); setReceived(''); setReference(''); setDraftTableId(null);
+    setCompleted(order); setCheckout(false); setCart([]); setCartDeals([]); setDiscount('0'); setDeliveryCharge('0'); setCustomerName(''); setCustomerPhone(''); setDeliveryAddress(''); setOrderNotes(''); setReceived(''); setReference(''); setDraftTableId(null);
   };
   const resetOrder = () => { setCompleted(null); setType('Dine-in'); setMethod('Cash'); };
-  return <div className="page"><PageHeader eyebrow="POINT OF SALE" title="Build an order." subtitle="Tap an item to add it. Quantities and totals update as you go." action={<span className="badge badge-green"><i className="local-dot" /> Ready for service</span>} />
+  const setOrderType = (value: OrderType) => {
+    setType(value);
+    if (value !== 'Dine-in') setDraftTableId(null);
+    else setDraftTableId(nextAvailableTableId(availableTables, new Set()));
+  };
+  return <div className="page"><PageHeader eyebrow="POINT OF SALE" title="Build an order." subtitle="Add menu items or a fixed-price deal, then take payment." action={openDay ? <span className="badge badge-green"><i className="local-dot" /> {openDay.businessDate} · Open</span> : user?.role === 'Manager' ? <Link href="/business-day" className="btn btn-primary">Start Day <ChevronRight size={14} /></Link> : <span className="badge badge-orange">No business day open</span>} />
+    {recoveryDetected && <div className="status-banner" style={{ marginBottom: 14 }}><AlertCircle size={15} /> Previous register session ended unexpectedly. Saved orders remain available; an unfinished cart could not be recovered.</div>}
+    {!openDay && <div className="status-banner" style={{ marginBottom: 14 }}><Clock3 size={15} /> New orders are paused until a manager starts a business day. Saved records are not affected.</div>}
     <div className="pos-layout"><div className="pos-main">
-      <div className="order-types">{(['Dine-in', 'Takeaway', 'Delivery'] as OrderType[]).map((value, i) => <button key={value} className={`type-choice ${type === value ? 'active' : ''}`} onClick={() => { setType(value); if (value !== 'Dine-in') setDraftTableId(null); }} data-testid={`button-order-type-${value.toLowerCase()}`}><strong>{value}</strong><small>{['A table in the room', 'Collect at the counter', 'To your doorstep'][i]}</small></button>)}</div>
-      {type === 'Dine-in' && <div className="field" style={{ marginBottom: 14, maxWidth: 360 }}><label htmlFor="table-select">Choose a table</label><select id="table-select" className="select" value={draftTableId || ''} onChange={event => setDraftTableId(event.target.value || null)} data-testid="select-table"><option value="">Select an available table</option>{data.tables.map(table => <option key={table.id} value={table.id}>{table.name} · {table.capacity} seats</option>)}</select>{!data.tables.length && <small className="validation">Add a table in Table setup before starting dine-in service.</small>}</div>}
-      {type === 'Delivery' && <section className="panel" style={{ padding: 15, marginBottom: 15 }}><div className="eyebrow">DELIVERY DETAILS</div><div className="form-grid"><div className="field"><label htmlFor="customer">Customer name *</label><input id="customer" className="input" value={customerName} onChange={event => setCustomerName(event.target.value)} placeholder="Name for the rider" data-testid="input-delivery-name" /></div><div className="field"><label htmlFor="phone">Phone *</label><input id="phone" className="input" value={customerPhone} onChange={event => setCustomerPhone(event.target.value)} placeholder="+92 ..." data-testid="input-delivery-phone" /></div><div className="field span-2"><label htmlFor="address">Delivery address *</label><input id="address" className="input" value={deliveryAddress} onChange={event => setDeliveryAddress(event.target.value)} placeholder="Street, area, landmark" data-testid="input-delivery-address" /></div><div className="field"><label htmlFor="delivery-charge">Delivery charge</label><input id="delivery-charge" className="input" type="number" min="0" value={deliveryCharge} onChange={event => setDeliveryCharge(event.target.value)} data-testid="input-delivery-charge" /></div><div className="field"><label htmlFor="delivery-notes">Order notes</label><input id="delivery-notes" className="input" value={orderNotes} onChange={event => setOrderNotes(event.target.value)} placeholder="Optional" data-testid="input-order-notes" /></div></div></section>}
+      <div className="order-types">{(['Dine-in', 'Takeaway', 'Delivery'] as OrderType[]).map((value, i) => <button key={value} className={`type-choice ${type === value ? 'active' : ''}`} onClick={() => setOrderType(value)} data-testid={`button-order-type-${value.toLowerCase()}`}><strong>{value}</strong><small>{['A table in the room', 'Collect at the counter', 'To your doorstep'][i]}</small></button>)}</div>
+      {type === 'Dine-in' && <div className="field" style={{ marginBottom: 14, maxWidth: 360 }}><label htmlFor="table-select">Available table</label><select id="table-select" className="select" value={draftTableId || ''} onChange={event => setDraftTableId(event.target.value || null)} data-testid="select-table"><option value="">Select an available table</option>{availableTables.map(table => <option key={table.id} value={table.id}>{table.name} · {table.capacity} seats</option>)}</select>{!availableTables.length && <small className="validation">No tables are available. Finish or cancel an active dine-in order, or add a configured table.</small>}{draftTableId && <small className="page-subtitle">Selected for this unfinished ticket only; it is not marked occupied until checkout.</small>}</div>}
+      {type === 'Delivery' && <section className="panel" style={{ padding: 15, marginBottom: 15 }}><div className="eyebrow">DELIVERY DETAILS</div><div className="form-grid"><div className="field"><label htmlFor="customer">Customer name *</label><input id="customer" className="input" value={customerName} onChange={event => setCustomerName(event.target.value)} placeholder="Name for the rider" data-testid="input-delivery-name" /></div><div className="field"><label htmlFor="phone">Phone *</label><input id="phone" className="input" value={customerPhone} onChange={event => setCustomerPhone(event.target.value)} placeholder="+92 ..." data-testid="input-delivery-phone" /></div><div className="field span-2"><label htmlFor="address">Delivery address *</label><input id="address" className="input" value={deliveryAddress} onChange={event => setDeliveryAddress(event.target.value)} placeholder="Street, area, landmark" data-testid="input-delivery-address" /></div><div className="field"><label htmlFor="delivery-charge">Delivery charge</label><input id="delivery-charge" className="input" type="number" min="0" value={deliveryCharge} onChange={event => setDeliveryCharge(event.target.value)} data-testid="input-delivery-charge" /></div><div className="field"><label htmlFor="delivery-notes">Order notes</label><input id="delivery-notes" className="input" value={orderNotes} onChange={event => setOrderNotes(event.target.value)} placeholder="Optional preparation note" data-testid="input-order-notes" /></div></div></section>}
+      {activeDeals.length > 0 && <section className="deal-offers panel"><div className="panel-head"><div><div className="eyebrow">MANAGER OFFERS</div><h2 className="panel-title">Deals & combos</h2></div><span className="badge">{activeDeals.length} active</span></div><div className="deal-offer-grid">{activeDeals.map(deal => <button className="deal-offer" key={deal.id} onClick={() => addDeal(deal)} data-testid={`pos-deal-${deal.id}`}><span className="deal-offer-name">{deal.name}</span><span className="deal-offer-price">{money(deal.fixedPrice, currency(data))}</span><small>{deal.items.map(line => `${line.quantity} × ${data.menuItems.find(item => item.id === line.menuItemId)?.name || line.nameSnapshot || 'Menu item'}`).join(' · ')}</small></button>)}</div></section>}
       <div className="toolbar"><div className="search-wrap" style={{ flex: 1 }}><Search /><input className="input" value={search} onChange={event => setSearch(event.target.value)} placeholder="Find something good…" aria-label="Search menu" data-testid="input-menu-search" /></div><span className="badge">{items.length} available</span></div>
       <div className="category-row"><button className={`category-chip ${selectedCategory === 'all' ? 'active' : ''}`} onClick={() => setSelectedCategory('all')} data-testid="category-all">Everything</button>{categories.map(category => <button key={category.id} className={`category-chip ${selectedCategory === category.id ? 'active' : ''}`} onClick={() => setSelectedCategory(category.id)} data-testid={`category-filter-${category.id}`}>{category.name}</button>)}</div>
       {items.length ? <div className="menu-grid">{items.map(item => <button key={item.id} className="menu-tile" onClick={() => addItem(item)} data-testid={`menu-item-${item.id}`}><div className="menu-image">{item.imageDataUrl ? <img src={item.imageDataUrl} alt={item.name} /> : <span className="menu-placeholder">{item.name.split(' ').map(word => word[0]).slice(0, 2).join('')}</span>}</div><div className="menu-tile-copy"><span className="menu-tile-name">{item.name}</span><span className="menu-tile-desc">{item.description}</span><span className="menu-tile-price">{money(item.price, currency(data))}</span></div></button>)}</div> : <div className="panel"><Empty title="Nothing available here" description="Try another category or update availability in Menu setup." icon={<UtensilsCrossed size={20} />} /></div>}
     </div>
-      <aside className="panel cart-panel"><div className="cart-head"><div><div className="eyebrow">CURRENT TICKET</div><h2 className="panel-title">{type} order</h2></div><span className="badge">{cart.reduce((sum, entry) => sum + entry.quantity, 0)} items</span></div>
-        {cart.length ? <div className="cart-list">{cart.map(entry => <div className="cart-item" key={entry.item.id} data-testid={`cart-item-${entry.item.id}`}><div className="cart-item-top"><span>{entry.item.name}</span><span className="mono">{money(entry.item.price * entry.quantity, currency(data))}</span></div><div className="cart-item-meta">{money(entry.item.price, currency(data))} each</div><div className="cart-item-controls"><button className="qty-btn" onClick={() => updateQuantity(entry.item.id, -1)} aria-label={`Remove one ${entry.item.name}`} data-testid={`button-decrease-${entry.item.id}`}><Minus size={12} /></button><span className="qty-number">{entry.quantity}</span><button className="qty-btn" onClick={() => updateQuantity(entry.item.id, 1)} aria-label={`Add one ${entry.item.name}`} data-testid={`button-increase-${entry.item.id}`}><Plus size={12} /></button><input className="cart-note" value={entry.note} onChange={event => setCart(current => current.map(item => item.item.id === entry.item.id ? { ...item, note: event.target.value } : item))} placeholder="Item note (optional)" aria-label={`Note for ${entry.item.name}`} data-testid={`input-note-${entry.item.id}`} /><button className="btn btn-quiet btn-sm" onClick={() => setCart(current => current.filter(item => item.item.id !== entry.item.id))} aria-label={`Remove ${entry.item.name}`} data-testid={`button-remove-${entry.item.id}`}><Trash2 size={13} /></button></div></div>)}</div> : <div className="cart-empty"><ShoppingCart size={23} /><span>Nothing on this ticket yet.<br />Choose an item to begin.</span></div>}
+      <aside className="panel cart-panel"><div className="cart-head"><div><div className="eyebrow">CURRENT TICKET</div><h2 className="panel-title">{type} order</h2></div><span className="badge">{itemCount} lines</span></div>
+        {hasCart ? <div className="cart-list">
+          {cart.map(entry => <div className="cart-item" key={entry.item.id} data-testid={`cart-item-${entry.item.id}`}><div className="cart-item-top"><span>{entry.item.name}</span><span className="mono">{money(entry.item.price * entry.quantity, currency(data))}</span></div><div className="cart-item-meta">{money(entry.item.price, currency(data))} each</div><div className="cart-item-controls"><button className="qty-btn" onClick={() => adjustQuantity(entry.item.id, -1)} aria-label={`Remove one ${entry.item.name}`} data-testid={`button-decrease-${entry.item.id}`}><Minus size={12} /></button><QuantityField value={entry.quantity} onCommit={quantity => updateQuantity(entry.item.id, quantity)} label={entry.item.name} testId={`input-quantity-${entry.item.id}`} /><button className="qty-btn" onClick={() => adjustQuantity(entry.item.id, 1)} aria-label={`Add one ${entry.item.name}`} data-testid={`button-increase-${entry.item.id}`}><Plus size={12} /></button><input className="cart-note" value={entry.note} onChange={event => setCart(current => current.map(item => item.item.id === entry.item.id ? { ...item, note: event.target.value } : item))} placeholder="Item note (optional)" aria-label={`Note for ${entry.item.name}`} data-testid={`input-note-${entry.item.id}`} /><button className="btn btn-quiet btn-sm" onClick={() => setCart(current => current.filter(item => item.item.id !== entry.item.id))} aria-label={`Remove ${entry.item.name}`} data-testid={`button-remove-${entry.item.id}`}><Trash2 size={13} /></button></div></div>)}
+          {cartDeals.map(entry => <div className="cart-item cart-deal-item" key={entry.deal.dealId} data-testid={`cart-deal-${entry.deal.dealId}`}><div className="cart-item-top"><span>{entry.deal.name}</span><span className="mono">{money(entry.deal.unitPrice * entry.quantity, currency(data))}</span></div><div className="cart-item-meta">Fixed offer · includes {entry.deal.items.map(item => `${item.quantity} × ${item.name}`).join(', ')}</div><div className="cart-item-controls"><button className="qty-btn" onClick={() => setCartDeals(current => current.map(line => line.deal.dealId === entry.deal.dealId ? { ...line, quantity: line.quantity - 1 } : line).filter(line => line.quantity > 0))} aria-label={`Remove one ${entry.deal.name}`}><Minus size={12} /></button><QuantityField value={entry.quantity} onCommit={quantity => setCartDeals(current => current.map(line => line.deal.dealId === entry.deal.dealId ? { ...line, quantity } : line))} label={entry.deal.name} testId={`input-deal-quantity-${entry.deal.dealId}`} /><button className="qty-btn" onClick={() => setCartDeals(current => current.map(line => line.deal.dealId === entry.deal.dealId ? { ...line, quantity: line.quantity + 1 } : line))} aria-label={`Add one ${entry.deal.name}`}><Plus size={12} /></button><button className="btn btn-quiet btn-sm" onClick={() => setCartDeals(current => current.filter(line => line.deal.dealId !== entry.deal.dealId))} aria-label={`Remove ${entry.deal.name}`}><Trash2 size={13} /></button></div></div>)}
+        </div> : <div className="cart-empty"><ShoppingCart size={23} /><span>Nothing on this ticket yet.<br />Choose an item or deal to begin.</span></div>}
         <div style={{ padding: '0 17px 12px' }}><div className="field"><label htmlFor="discount">Discount amount</label><input id="discount" className="input" type="number" min="0" max={subtotal} value={discount} onChange={event => setDiscount(event.target.value)} data-testid="input-discount" /></div>{type !== 'Delivery' && <div className="field" style={{ marginTop: 9 }}><label htmlFor="ticket-note">Order note</label><input id="ticket-note" className="input" value={orderNotes} onChange={event => setOrderNotes(event.target.value)} placeholder="Optional kitchen note" data-testid="input-order-note" /></div>}</div>
         <div className="cart-totals"><div className="total-line"><span>Subtotal</span><strong>{money(subtotal, currency(data))}</strong></div>{parsedDiscount > 0 && <div className="total-line"><span>Discount</span><strong>− {money(parsedDiscount, currency(data))}</strong></div>}{charge > 0 && <div className="total-line"><span>Delivery</span><strong>{money(charge, currency(data))}</strong></div>}<div className="total-line grand-total"><span>Total due</span><strong>{money(total, currency(data))}</strong></div></div>
-        <div className="cart-actions"><button className="btn btn-quiet btn-sm" onClick={() => { setCart([]); toast('Ticket cleared.'); }} disabled={!cart.length} data-testid="button-clear-cart">Clear</button><button className="btn btn-primary" onClick={() => setCheckout(true)} disabled={!cart.length} data-testid="button-checkout">Take payment <ChevronRight size={15} /></button></div>
+        <div className="cart-actions"><button className="btn btn-quiet btn-sm" onClick={() => { setCart([]); setCartDeals([]); toast('Ticket cleared.'); }} disabled={!hasCart} data-testid="button-clear-cart">Clear</button><button className="btn btn-primary" onClick={() => setCheckout(true)} disabled={!hasCart || !openDay || (type === 'Dine-in' && (!draftTableId || occupied.has(draftTableId)))} data-testid="button-checkout">Take payment <ChevronRight size={15} /></button></div>
       </aside>
     </div>
     {checkout && (
       <Dialog title="Settle this ticket" onClose={() => setCheckout(false)}>
-        <div className="status-banner" style={{ marginBottom: 17 }}>
-          <ReceiptText size={16} />
-          <span>{cart.reduce((sum, entry) => sum + entry.quantity, 0)} items · <b>{money(total, currency(data))}</b> due</span>
-        </div>
-        <div className="field">
-          <label>Payment method</label>
-          <div className="payment-methods">
-            {(['Cash', 'Card', 'Easypaisa', 'JazzCash', 'Other'] as PaymentMethod[]).map(value => (
-              <button key={value} className={`pay-method ${method === value ? 'active' : ''}`} onClick={() => setMethod(value)} data-testid={`payment-${value.toLowerCase()}`}>{value}</button>
-            ))}
-          </div>
-        </div>
-        {method === 'Cash' && (
-          <div className="form-grid" style={{ marginTop: 16 }}>
-            <div className="field">
-              <label htmlFor="received">Cash received</label>
-              <input id="received" type="number" min={total} className="input" autoFocus value={received} onChange={event => setReceived(event.target.value)} placeholder={String(total)} data-testid="input-cash-received" />
-            </div>
-            <div className="field">
-              <label>Change due</label>
-              <div className="input" style={{ background: 'hsl(var(--secondary))' }}>{money(Math.max(0, (Number(received) || 0) - total), currency(data))}</div>
-            </div>
-          </div>
-        )}
+        <div className="status-banner" style={{ marginBottom: 17 }}><ReceiptText size={16} /><span>{itemCount} lines · <b>{money(total, currency(data))}</b> due</span></div>
+        <div className="field"><label>Payment method</label><div className="payment-methods">{(['Cash', 'Card', 'Easypaisa', 'JazzCash', 'Other'] as PaymentMethod[]).map(value => <button key={value} className={`pay-method ${method === value ? 'active' : ''}`} onClick={() => setMethod(value)} data-testid={`payment-${value.toLowerCase()}`}>{value}</button>)}</div></div>
+        {method === 'Cash' && <div className="form-grid" style={{ marginTop: 16 }}><div className="field"><label htmlFor="received">Cash received</label><input id="received" type="number" min={total} className="input" autoFocus value={received} onChange={event => setReceived(event.target.value)} placeholder={String(total)} data-testid="input-cash-received" /></div><div className="field"><label>Change due</label><div className="input" style={{ background: 'hsl(var(--secondary))' }}>{money(Math.max(0, (Number(received) || 0) - total), currency(data))}</div></div></div>}
         {method !== 'Cash' && <p className="page-subtitle" style={{ marginTop: 12 }}>Record the full bill against {method}. No external payment service is connected.</p>}
-        <div className="field" style={{ marginTop: 16 }}>
-          <label htmlFor="payment-reference">Transaction/reference number (optional)</label>
-          <input id="payment-reference" className="input" value={reference} onChange={event => setReference(event.target.value)} data-testid="input-payment-reference" />
-        </div>
-        <div className="dialog-actions" style={{ padding: '22px 0 0' }}>
-          <button className="btn" onClick={() => setCheckout(false)}>Go back</button>
-          <button className="btn btn-primary" onClick={complete} data-testid="button-complete-payment"><Check size={14} /> Complete sale</button>
-        </div>
+        <div className="field" style={{ marginTop: 16 }}><label htmlFor="payment-reference">Transaction/reference number (optional)</label><input id="payment-reference" className="input" value={reference} onChange={event => setReference(event.target.value)} data-testid="input-payment-reference" /></div>
+        <div className="dialog-actions" style={{ padding: '22px 0 0' }}><button className="btn" onClick={() => setCheckout(false)}>Go back</button><button className="btn btn-primary" onClick={complete} data-testid="button-complete-payment"><Check size={14} /> Complete sale</button></div>
       </Dialog>
     )}
-    {completed && <Dialog title="Payment recorded" onClose={resetOrder} wide><div className="status-banner" style={{ marginBottom: 18 }}><Check size={16} /> Order {completed.orderNumber} is paid and saved on this device.</div><Receipt order={completed} data={data} /><div className="dialog-actions" style={{ paddingBottom: 0 }}><button className="btn" onClick={() => printReceipt()} data-testid="button-print-receipt"><Printer size={14} /> Print receipt</button><button className="btn btn-primary" onClick={resetOrder} data-testid="button-new-ticket">Start next order <ChevronRight size={14} /></button></div></Dialog>}
+    {completed && <Dialog title="Payment recorded" onClose={resetOrder} wide><div className="status-banner" style={{ marginBottom: 18 }}><Check size={16} /> Order {completed.orderNumber} is paid and saved on this device.</div><Receipt order={completed} data={data} /><div className="dialog-actions" style={{ paddingBottom: 0 }}><button className="btn" onClick={() => printReceipt()} data-testid="button-print-receipt"><Printer size={14} /> Print receipt</button><button className="btn" onClick={() => printKitchenToken(completed, data.settings)} data-testid="button-print-kitchen-token-completed"><Printer size={14} /> Print Kitchen Token</button><button className="btn btn-primary" onClick={resetOrder} data-testid="button-new-ticket">Start next order <ChevronRight size={14} /></button></div></Dialog>}
   </div>;
 }
 
