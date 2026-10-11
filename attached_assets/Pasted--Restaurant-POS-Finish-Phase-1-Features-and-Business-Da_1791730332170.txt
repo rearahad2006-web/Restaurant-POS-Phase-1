@@ -1,0 +1,135 @@
+# Restaurant POS — Finish Phase 1 Features and Business-Day Management
+
+Work on the existing Restaurant POS project. Do not rebuild it or start Phase 2.
+
+## Critical rules
+- Preserve existing POS features, reports, Excel export, orders, payments, expenses, menu, tables, staff, settings, and saved data.
+- Reuse existing components, storage/repository functions, permissions, and printing utilities.
+- Make small, targeted changes.
+- Do not add SQLite, cloud services, desktop packaging, or direct/silent thermal printing.
+- Do not claim tests passed unless actually run.
+- If the dependency installation is blocked by Replit's package firewall, stop and report the exact blocker. Do not bypass the firewall or damage the project.
+
+## Feature 1 — Deals and Combo Offers
+
+- Add a manager-only Deals page.
+- Managers can create, edit, activate, deactivate, and delete deals.
+- Each deal includes a name, optional description, existing menu items, quantities, and a fixed price in PKR.
+- Cashiers can select active deals in the POS.
+- Charge the fixed deal price without charging the included items again.
+- Separately ordered menu items must still be charged normally.
+- Support deal quantity changes and removal.
+- Save a snapshot of the deal in each completed order so later edits do not change historical receipts or reports.
+- Enforce existing manager/cashier permissions.
+
+## Feature 2 — Separate Kitchen Order Tokens
+
+Add a **Print Kitchen Token** action to existing orders.
+
+Include restaurant name/logo, order number, date/time, order type, table number, relevant customer/delivery details, item names and quantities, deal contents, and preparation notes.
+
+- Do not show prices, totals, or payment details.
+- Keep the kitchen token separate from the customer receipt.
+- Use the existing browser print approach.
+- Print the selected order only and trigger printing once per action.
+- Do not implement silent printing or a full kitchen display system.
+
+## Feature 3 — Manual Quantity Entry
+
+- Let cashiers click a cart quantity and type a positive whole number.
+- Apply the new quantity with Enter or when leaving the field.
+- Support regular items and deals for Dine-in, Takeaway, and Delivery.
+- Keep plus, minus, and remove controls working.
+- Recalculate all applicable totals, discounts, and delivery charges.
+- Reject zero, negative, decimal, and invalid quantities.
+- Allow the field to be temporarily empty during editing without removing the item.
+- Restore the previous quantity if invalid input is committed.
+- Pressing Enter in the quantity field must not accidentally complete the order.
+- Never modify completed orders.
+
+## Feature 4 — Automatic Dine-in Table Selection
+
+- When Dine-in is selected, automatically select the first available configured table.
+- For the next new Dine-in order, select the next available table in a sensible sequence.
+- Skip tables occupied by active orders.
+- Show the selected table clearly and let the cashier change it manually.
+- Switching to Takeaway or Delivery must clear the current Dine-in selection.
+- Switching back to Dine-in should select an available table.
+- If no tables are available, show a clear message; never assign an occupied table.
+- Use existing table records and status logic. Do not create duplicate tables.
+- Do not permanently mark a table occupied merely because it was selected in an unfinished cart.
+- Save the correct table with the order and show it on receipts and kitchen tokens.
+- Preserve existing order history and table-management behavior.
+
+## Feature 5 — Restaurant Business Day: Start Day and End Day
+
+The restaurant operates from **8:00 AM until approximately 3:00 AM the following calendar day**. A business day is not the same as a calendar day.
+
+### A. Start Day
+
+- Add a clear **Start Day** action to the existing POS/manager interface.
+- A new business day normally starts at 8:00 AM.
+- Record the business-day ID, business date, actual start timestamp, starting user, and opening cash amount if the existing payment/cash workflow supports it.
+- Prevent accidentally starting multiple business days simultaneously.
+- If the business day is already open, show its status and allow authorized users to continue working.
+- If the restaurant starts late or closes late, do not lose or misclassify orders.
+
+### B. Business-day date rules
+
+- Orders made from 8:00 AM through 11:59 PM belong to that day's business day.
+- Orders made after midnight and before 3:00 AM belong to the business day that started at 8:00 AM the previous calendar day.
+- For example, an order at 1:30 AM on October 12 belongs to the business day that started at 8:00 AM on October 11, provided that business day is still active.
+- Use a consistent local restaurant timezone and store reliable timestamps.
+- Daily reports, payments, expenses, and sales totals must use the business-day assignment rather than grouping everything by calendar date.
+- Preserve historical data and existing report/Excel functionality.
+
+### C. End Day
+
+- Add a clear **End Day** button for authorized staff.
+- Before closing, show a summary of orders, sales, payment methods, expenses, cancellations, and cash totals where available.
+- Require confirmation before closing.
+- Record the end timestamp, closing user, and closing cash amount if supported.
+- Once closed, prevent new orders from being assigned to that business day.
+- Preserve all orders and records. Never delete or reset sales data.
+- A new business day should be started explicitly; do not silently create duplicate days.
+
+### D. Logout, power loss, and recovery
+
+- On logout, ask the user whether to end the business day or leave it open, according to their permissions. Make the consequence clear.
+- If the computer loses power or the browser closes unexpectedly, preserve all saved orders and the open business-day record.
+- On the next launch, detect an interrupted session and clearly show whether the previous business day is still open.
+- Let an authorized manager resume the existing day or close it with a recorded timestamp and confirmation.
+- Do not pretend the application can detect the exact power-off time if it was not recorded.
+- Do not lose or duplicate orders during recovery.
+- Prevent cashiers from performing manager-only closing actions if existing roles require manager authorization.
+- If an unfinished cart cannot be safely recovered, explain this to the user rather than silently creating an order.
+
+## Feature 6 — Tests and Verification
+
+Add or update focused tests for:
+
+1. Manager deal creation/editing and cashier permissions.
+2. Fixed deal price, no double charging, and historical snapshots.
+3. Kitchen token contents and one print action per click.
+4. Manual quantity editing and invalid-input handling.
+5. Automatic table assignment, occupied-table skipping, and no-table-available handling.
+6. Start Day and End Day actions and role permissions.
+7. Orders at 7:59 AM, 8:00 AM, 11:59 PM, 12:30 AM, and 2:59 AM.
+8. Orders after midnight remaining attached to the correct business day.
+9. Logout, unexpected shutdown, and safe recovery.
+10. Reports and Excel export using business-day totals.
+11. Existing order, payment, expense, and receipt functionality.
+
+Run the focused tests, TypeScript/type check, and production build. Fix errors introduced by these changes.
+
+## Final response
+
+Report:
+- Which features were implemented.
+- Files changed.
+- Tests actually run and their results.
+- TypeScript/type-check result.
+- Production build result.
+- Any unfinished requirements or blockers.
+
+Do not start Phase 2 until all Phase 1 features are implemented and verified.
