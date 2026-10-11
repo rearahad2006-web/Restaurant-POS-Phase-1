@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState, createContext, useContext, type ReactNode, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, createContext, useContext, type ReactNode, type FormEvent } from 'react';
 import { Route, Switch, Link, useLocation } from 'wouter';
 import { LayoutDashboard, ShoppingCart, UtensilsCrossed, Armchair, ClipboardList, Search, Plus, Minus, Trash2, Pencil, Printer, LogOut, Banknote, CircleDollarSign, Clock3, Check, X, ChevronRight, CircleHelp, ReceiptText, WifiOff, PackagePlus, Users, Salad, CreditCard, MapPin, Phone, FileText, AlertCircle, ArrowUpRight, BarChart3, Settings, UserRound, CalendarDays, Eye } from 'lucide-react';
 import { AppData, BusinessDay, Category, Deal, DealItem, Expense, MenuItem, Order, OrderDeal, OrderItem, OrderType, PaymentMethod, Payment, Table, UserRole, money, makeId, now } from './domain';
 import { repository } from './storage/repository';
-import { printKitchenToken, printReceipt } from './services/printing';
+import { buildKitchenTokenMarkup, printCompletedOrder, printKitchenToken, printReceipt } from './services/printing';
+import './pos-workflow.css';
 import { downloadReportWorkbook } from './reporting/export-xlsx';
 import { activeBusinessDay, businessDateForRecord, businessDateForTimestamp, closeBusinessDay, isOrderOccupyingTable, nextAvailableTableId, occupiedTableIds } from './domain/business-days';
 import {
@@ -1234,12 +1235,28 @@ function PosPage() {
   const [received, setReceived] = useState('');
   const [reference, setReference] = useState('');
   const [completed, setCompleted] = useState<Order | null>(null);
+  const autoPrintedOrders = useRef(new Set<string>());
+  useEffect(() => {
+    if (!completed || autoPrintedOrders.current.has(completed.id)) return;
+    autoPrintedOrders.current.add(completed.id);
+    try {
+      printCompletedOrder();
+    } catch {
+      toast('The browser could not open printing automatically. Use Print bill + kitchen token below.');
+    }
+  }, [completed, toast]);
   const openDay = activeBusinessDay(data.businessDays);
   const occupied = useMemo(() => occupiedTableIds(data.orders, openDay), [data.orders, openDay]);
   const availableTables = useMemo(() => data.tables.filter(table => !occupied.has(table.id)), [data.tables, occupied]);
   const categories = [...data.categories].sort((a, b) => a.sortOrder - b.sortOrder);
-  const items = data.menuItems.filter(item => item.available && (selectedCategory === 'all' || item.categoryId === selectedCategory) && `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()));
+  const dealsCategoryId = 'deals';
+  const items = data.menuItems.filter(item => item.available && selectedCategory !== dealsCategoryId && (selectedCategory === 'all' || item.categoryId === selectedCategory) && `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()));
   const activeDeals = data.deals.filter(deal => deal.active);
+  const visibleDeals = activeDeals.filter(deal => {
+    const includedItems = deal.items.map(line => data.menuItems.find(item => item.id === line.menuItemId)?.name || line.nameSnapshot || '').join(' ');
+    return `${deal.name} ${deal.description || ''} ${includedItems}`.toLowerCase().includes(search.toLowerCase());
+  });
+  const visibleProductCount = selectedCategory === dealsCategoryId ? visibleDeals.length : items.length;
   const subtotal = cart.reduce((sum, entry) => sum + entry.item.price * entry.quantity, 0) +
     cartDeals.reduce((sum, entry) => sum + entry.deal.unitPrice * entry.quantity, 0);
   const itemCount = cart.reduce((sum, entry) => sum + entry.quantity, 0) + cartDeals.reduce((sum, entry) => sum + entry.quantity, 0);
@@ -1256,23 +1273,25 @@ function PosPage() {
   const updateQuantity = (id: string, quantity: number) => setCart(current => current.map(entry => entry.item.id === id ? { ...entry, quantity } : entry));
   const adjustQuantity = (id: string, diff: number) => setCart(current => current.map(entry => entry.item.id === id ? { ...entry, quantity: entry.quantity + diff } : entry).filter(entry => entry.quantity > 0));
   const addDeal = (deal: Deal) => {
+    const activeDeal = data.deals.find(entry => entry.id === deal.id && entry.active);
+    if (!activeDeal) return;
     const snapshot: OrderDeal = {
-      dealId: deal.id,
-      name: deal.name,
-      description: deal.description,
-      unitPrice: deal.fixedPrice,
+      dealId: activeDeal.id,
+      name: activeDeal.name,
+      description: activeDeal.description,
+      unitPrice: activeDeal.fixedPrice,
       quantity: 1,
-      lineTotal: deal.fixedPrice,
-      items: deal.items.map(line => ({
+      lineTotal: activeDeal.fixedPrice,
+      items: activeDeal.items.map(line => ({
         menuItemId: line.menuItemId,
         name: data.menuItems.find(item => item.id === line.menuItemId)?.name || line.nameSnapshot || 'Removed menu item',
         quantity: line.quantity,
       })),
     };
     setCartDeals(current => {
-      const existing = current.find(entry => entry.deal.dealId === deal.id);
+      const existing = current.find(entry => entry.deal.dealId === activeDeal.id);
       return existing
-        ? current.map(entry => entry.deal.dealId === deal.id ? { ...entry, quantity: entry.quantity + 1 } : entry)
+        ? current.map(entry => entry.deal.dealId === activeDeal.id ? { ...entry, quantity: entry.quantity + 1 } : entry)
         : [...current, { deal: snapshot, quantity: 1 }];
     });
   };
@@ -1318,10 +1337,15 @@ function PosPage() {
       <div className="order-types">{(['Dine-in', 'Takeaway', 'Delivery'] as OrderType[]).map((value, i) => <button key={value} className={`type-choice ${type === value ? 'active' : ''}`} onClick={() => setOrderType(value)} data-testid={`button-order-type-${value.toLowerCase()}`}><strong>{value}</strong><small>{['A table in the room', 'Collect at the counter', 'To your doorstep'][i]}</small></button>)}</div>
       {type === 'Dine-in' && <div className="field" style={{ marginBottom: 14, maxWidth: 360 }}><label htmlFor="table-select">Available table</label><select id="table-select" className="select" value={draftTableId || ''} onChange={event => setDraftTableId(event.target.value || null)} data-testid="select-table"><option value="">Select an available table</option>{availableTables.map(table => <option key={table.id} value={table.id}>{table.name} · {table.capacity} seats</option>)}</select>{!availableTables.length && <small className="validation">No tables are available. Finish or cancel an active dine-in order, or add a configured table.</small>}{draftTableId && <small className="page-subtitle">Selected for this unfinished ticket only; it is not marked occupied until checkout.</small>}</div>}
       {type === 'Delivery' && <section className="panel" style={{ padding: 15, marginBottom: 15 }}><div className="eyebrow">DELIVERY DETAILS</div><div className="form-grid"><div className="field"><label htmlFor="customer">Customer name *</label><input id="customer" className="input" value={customerName} onChange={event => setCustomerName(event.target.value)} placeholder="Name for the rider" data-testid="input-delivery-name" /></div><div className="field"><label htmlFor="phone">Phone *</label><input id="phone" className="input" value={customerPhone} onChange={event => setCustomerPhone(event.target.value)} placeholder="+92 ..." data-testid="input-delivery-phone" /></div><div className="field span-2"><label htmlFor="address">Delivery address *</label><input id="address" className="input" value={deliveryAddress} onChange={event => setDeliveryAddress(event.target.value)} placeholder="Street, area, landmark" data-testid="input-delivery-address" /></div><div className="field"><label htmlFor="delivery-charge">Delivery charge</label><input id="delivery-charge" className="input" type="number" min="0" value={deliveryCharge} onChange={event => setDeliveryCharge(event.target.value)} data-testid="input-delivery-charge" /></div><div className="field"><label htmlFor="delivery-notes">Order notes</label><input id="delivery-notes" className="input" value={orderNotes} onChange={event => setOrderNotes(event.target.value)} placeholder="Optional preparation note" data-testid="input-order-notes" /></div></div></section>}
-      {activeDeals.length > 0 && <section className="deal-offers panel"><div className="panel-head"><div><div className="eyebrow">MANAGER OFFERS</div><h2 className="panel-title">Deals & combos</h2></div><span className="badge">{activeDeals.length} active</span></div><div className="deal-offer-grid">{activeDeals.map(deal => <button className="deal-offer" key={deal.id} onClick={() => addDeal(deal)} data-testid={`pos-deal-${deal.id}`}><span className="deal-offer-name">{deal.name}</span><span className="deal-offer-price">{money(deal.fixedPrice, currency(data))}</span><small>{deal.items.map(line => `${line.quantity} × ${data.menuItems.find(item => item.id === line.menuItemId)?.name || line.nameSnapshot || 'Menu item'}`).join(' · ')}</small></button>)}</div></section>}
-      <div className="toolbar"><div className="search-wrap" style={{ flex: 1 }}><Search /><input className="input" value={search} onChange={event => setSearch(event.target.value)} placeholder="Find something good…" aria-label="Search menu" data-testid="input-menu-search" /></div><span className="badge">{items.length} available</span></div>
-      <div className="category-row"><button className={`category-chip ${selectedCategory === 'all' ? 'active' : ''}`} onClick={() => setSelectedCategory('all')} data-testid="category-all">Everything</button>{categories.map(category => <button key={category.id} className={`category-chip ${selectedCategory === category.id ? 'active' : ''}`} onClick={() => setSelectedCategory(category.id)} data-testid={`category-filter-${category.id}`}>{category.name}</button>)}</div>
-      {items.length ? <div className="menu-grid">{items.map(item => <button key={item.id} className="menu-tile" onClick={() => addItem(item)} data-testid={`menu-item-${item.id}`}><div className="menu-image">{item.imageDataUrl ? <img src={item.imageDataUrl} alt={item.name} /> : <span className="menu-placeholder">{item.name.split(' ').map(word => word[0]).slice(0, 2).join('')}</span>}</div><div className="menu-tile-copy"><span className="menu-tile-name">{item.name}</span><span className="menu-tile-desc">{item.description}</span><span className="menu-tile-price">{money(item.price, currency(data))}</span></div></button>)}</div> : <div className="panel"><Empty title="Nothing available here" description="Try another category or update availability in Menu setup." icon={<UtensilsCrossed size={20} />} /></div>}
+      <div className="toolbar"><div className="search-wrap" style={{ flex: 1 }}><Search /><input className="input" value={search} onChange={event => setSearch(event.target.value)} placeholder="Find menu items or deals…" aria-label="Search menu" data-testid="input-menu-search" /></div><span className="badge">{visibleProductCount} {selectedCategory === dealsCategoryId ? 'deals' : 'available'}</span></div>
+      <div className="category-row"><button className={`category-chip ${selectedCategory === 'all' ? 'active' : ''}`} onClick={() => setSelectedCategory('all')} data-testid="category-all">Everything</button>{categories.map(category => <button key={category.id} className={`category-chip ${selectedCategory === category.id ? 'active' : ''}`} onClick={() => setSelectedCategory(category.id)} data-testid={`category-filter-${category.id}`}>{category.name}</button>)}<button className={`category-chip ${selectedCategory === dealsCategoryId ? 'active' : ''}`} onClick={() => setSelectedCategory(dealsCategoryId)} data-testid="category-deals">Deals</button></div>
+      {selectedCategory === dealsCategoryId
+        ? visibleDeals.length
+          ? <div className="menu-grid">{visibleDeals.map(deal => <button type="button" className="menu-tile deal-menu-tile" key={deal.id} onClick={() => addDeal(deal)} aria-label={`Add ${deal.name} to order for ${money(deal.fixedPrice, currency(data))}`} data-testid={`pos-deal-${deal.id}`}><div className="deal-menu-image"><PackagePlus size={22} /><span>DEAL</span></div><div className="menu-tile-copy"><span className="menu-tile-name">{deal.name}</span><span className="deal-menu-includes">{deal.items.map(line => `${line.quantity} × ${data.menuItems.find(item => item.id === line.menuItemId)?.name || line.nameSnapshot || 'Menu item'}`).join(' · ')}</span><span className="menu-tile-price">{money(deal.fixedPrice, currency(data))}</span><span className="deal-menu-action"><Plus size={13} /> Add deal</span></div></button>)}</div>
+          : <div className="panel"><Empty title={activeDeals.length ? 'No deals match your search' : 'No active deals'} description={activeDeals.length ? 'Try another search.' : 'Ask a manager to add or activate a deal.'} icon={<PackagePlus size={20} />} /></div>
+        : items.length
+          ? <div className="menu-grid">{items.map(item => <button key={item.id} className="menu-tile" onClick={() => addItem(item)} data-testid={`menu-item-${item.id}`}><div className="menu-image">{item.imageDataUrl ? <img src={item.imageDataUrl} alt={item.name} /> : <span className="menu-placeholder">{item.name.split(' ').map(word => word[0]).slice(0, 2).join('')}</span>}</div><div className="menu-tile-copy"><span className="menu-tile-name">{item.name}</span><span className="menu-tile-desc">{item.description}</span><span className="menu-tile-price">{money(item.price, currency(data))}</span></div></button>)}</div>
+          : <div className="panel"><Empty title="Nothing available here" description="Try another category or update availability in Menu setup." icon={<UtensilsCrossed size={20} />} /></div>}
     </div>
       <aside className="panel cart-panel"><div className="cart-head"><div><div className="eyebrow">CURRENT TICKET</div><h2 className="panel-title">{type} order</h2></div><span className="badge">{itemCount} lines</span></div>
         {hasCart ? <div className="cart-list">
@@ -1343,7 +1367,7 @@ function PosPage() {
         <div className="dialog-actions" style={{ padding: '22px 0 0' }}><button className="btn" onClick={() => setCheckout(false)}>Go back</button><button className="btn btn-primary" onClick={complete} data-testid="button-complete-payment"><Check size={14} /> Complete sale</button></div>
       </Dialog>
     )}
-    {completed && <Dialog title="Payment recorded" onClose={resetOrder} wide><div className="status-banner" style={{ marginBottom: 18 }}><Check size={16} /> Order {completed.orderNumber} is paid and saved on this device.</div><Receipt order={completed} data={data} /><div className="dialog-actions" style={{ paddingBottom: 0 }}><button className="btn" onClick={() => printReceipt()} data-testid="button-print-receipt"><Printer size={14} /> Print receipt</button><button className="btn" onClick={() => printKitchenToken(completed, data.settings)} data-testid="button-print-kitchen-token-completed"><Printer size={14} /> Print Kitchen Token</button><button className="btn btn-primary" onClick={resetOrder} data-testid="button-new-ticket">Start next order <ChevronRight size={14} /></button></div></Dialog>}
+    {completed && <Dialog title="Payment recorded" onClose={resetOrder} wide><div className="status-banner" style={{ marginBottom: 12 }}><Check size={16} /> Order {completed.orderNumber} is paid and saved on this device.</div><p className="page-subtitle print-workflow-hint">The app asks your browser to print the customer bill and separate kitchen token. If browser restrictions prevent the dialog from opening, choose Print bill + kitchen token below. Printing requires browser confirmation; silent printing is not supported.</p><div className={`order-print-pack ${data.settings.printWidth || 'narrow'}`} data-testid={`order-print-pack-${completed.id}`}><Receipt order={completed} data={data} /><div className="kitchen-token-container" dangerouslySetInnerHTML={{ __html: buildKitchenTokenMarkup(completed, data.settings) }} /></div><div className="dialog-actions" style={{ paddingBottom: 0 }}><button className="btn" onClick={() => printReceipt()} data-testid="button-print-receipt"><Printer size={14} /> Print receipt</button><button className="btn btn-primary" onClick={() => printCompletedOrder()} data-testid="button-print-order-bundle"><Printer size={14} /> Print bill + kitchen token</button><button className="btn" onClick={resetOrder} data-testid="button-new-ticket">Start next order <ChevronRight size={14} /></button></div></Dialog>}
   </div>;
 }
 

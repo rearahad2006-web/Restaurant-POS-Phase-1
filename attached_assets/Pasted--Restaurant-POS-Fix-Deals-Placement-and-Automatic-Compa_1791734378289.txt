@@ -1,0 +1,106 @@
+# Restaurant POS — Fix Deals Placement and Automatic Compact Kitchen Tokens
+
+Work on the EXISTING Restaurant POS project. The main application and its current features are working. Fix only the two issues below.
+
+## CRITICAL RULES
+
+- Do not rebuild or redesign the application.
+- Do not change Reports, Excel Export, payments, expenses, orders, menu, tables, staff, or settings unnecessarily.
+- Preserve all existing saved data and backward compatibility.
+- Reuse existing components, order data, deal models, and printing utilities.
+- Make minimal, targeted changes.
+- Do not add dependencies unless absolutely necessary.
+- Run relevant tests, type-checking, and production build if the environment permits.
+- If the project fails to start because of dependency installation or a Replit package-firewall error, report the blocker instead of changing unrelated code.
+
+## ISSUE 1 — MOVE DEALS INTO THE FOOD CATEGORIES
+
+Currently, the Deals & Combos section appears above the menu and search bar. Customers/cashiers cannot select deals naturally alongside food items.
+
+### Required changes
+
+1. Remove the large Deals & Combos banner from above the menu.
+2. Add **Deals** as a category tab alongside the existing food categories, such as Everything, From the tandoor, Rice & bowls, and On the side.
+3. When the cashier clicks the Deals category, display all active deals as selectable product-style cards in the same menu area.
+4. Each deal card should show:
+   - Deal name
+   - Included items and quantities
+   - Fixed deal price in PKR
+   - A clear way to add the deal to the cart
+5. Clicking a deal must add it to the current order using its fixed price. Do not charge the included components separately.
+6. Searching and switching categories must continue working normally.
+7. Keep deal management separate from the POS menu:
+   - Managers can create, edit, activate/deactivate, and delete deals from the existing manager Deals section.
+   - Cashiers can select active deals from the POS Deals category.
+   - Editing or deleting a deal must not change completed historical orders.
+8. If there are no active deals, show a simple message in the Deals category.
+9. Preserve the current visual style, spacing, and responsive layout.
+
+## ISSUE 2 — AUTOMATIC COMPACT KITCHEN TOKEN WITH EVERY ORDER
+
+Currently, the customer receipt and Kitchen Token have separate print buttons. Clicking Print Kitchen Token opens a full-page print preview with tiny content and too much empty space.
+
+I want a compact kitchen token, similar to a small restaurant receipt, and I do not want to click a separate Kitchen Token print button for every order.
+
+### Required behavior
+
+1. When an order is successfully completed, automatically prepare the customer bill and kitchen token together in the existing print workflow.
+2. The customer bill must retain its current contents and totals.
+3. The kitchen token must be a separate, compact print section, not merged into the customer bill's financial details.
+4. Remove the separate **Print Kitchen Token** button from the normal order-completion interface after automatic printing is implemented.
+5. Keep the existing **Print Receipt** action if needed for customer reprints.
+6. Existing orders should still be printable, and the kitchen token should remain accessible through the appropriate order/reprint workflow if needed.
+7. Do not trigger printing when a cart is merely opened, an item is added, or an order has not been completed.
+8. Ensure printing does not create duplicate orders, duplicate payments, or duplicate print triggers.
+9. If automatic printing is blocked by browser restrictions, explain the limitation and provide the safest available browser-print workflow. Do not claim silent printing works.
+
+### Kitchen token design
+
+Create a separate print layout specifically for the kitchen token:
+
+- Narrow receipt-style width suitable for a typical 58 mm or 80 mm thermal printer.
+- Black text on a white background.
+- Readable, reasonably large text.
+- Minimal margins and no full-page letter/A4 layout.
+- No large empty spaces, decorative banner, or unnecessary paragraphs.
+- No prices, subtotal, discount, grand total, payment method, cash received, or change.
+- Include only:
+  - Restaurant name, in a small header if available
+  - Large, clear order number
+  - Date and time
+  - Order type
+  - Table number for Dine-in
+  - Customer/delivery details when applicable
+  - Item names and quantities
+  - Deal names and included item quantities
+  - Item notes and preparation instructions, if present
+
+The kitchen token must contain only information the kitchen needs to prepare the order.
+
+### Printing workflow
+
+- Reuse the existing order-completion and print utilities.
+- Make sure the print layout contains both the customer bill and the compact kitchen token as separate print sections.
+- Use appropriate CSS print rules so the output is compact and does not produce an unnecessary full blank page.
+- Keep the token and customer bill distinguishable.
+- Avoid calling the browser print function more than once for a single order-completion action.
+- Do not silently mark an order as printed if the print dialog was never triggered.
+- Do not implement direct or silent thermal printing in this task.
+
+## REQUIRED TESTS
+
+1. Deals appear as a category tab rather than a banner above the menu.
+2. Selecting Deals displays active deals as product cards.
+3. Clicking a deal adds it to the cart at the correct fixed price.
+4. Inactive deals cannot be selected.
+5. Managers can still manage deals; cashiers cannot access management actions.
+6. Completing an order triggers the intended combined bill/token print workflow once.
+7. The customer bill totals remain correct.
+8. The kitchen token contains order details and quantities but no prices or payment information.
+9. The kitchen token is compact and receipt-width, without an unnecessary full-page layout.
+10. Reprinting an existing order does not create another order or payment.
+11. Normal menu categories, cart operations, and existing order workflows remain functional.
+
+Run the relevant tests, TypeScript/type-checking, and production build. Report what was actually tested and any remaining browser-print limitations.
+
+Do not start Phase 2. Do not modify unrelated features.
