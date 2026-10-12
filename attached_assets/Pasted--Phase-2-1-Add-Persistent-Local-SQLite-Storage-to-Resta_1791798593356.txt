@@ -1,0 +1,140 @@
+# Phase 2.1 — Add Persistent Local SQLite Storage to Restaurant POS
+
+Upgrade my existing, working Restaurant POS to use SQLite for persistent local storage, while preserving all existing functionality and data.
+
+## 1. Mandatory pre-implementation inspection
+
+**Inspect first. Do not modify any files until you have reported your findings and proposed the migration plan.**
+
+Inspect:
+- The current React, TypeScript, and Vite architecture.
+- The workspace and package configuration.
+- The storage/repository abstraction and data models.
+- All current data storage and access paths.
+- Existing tests, scripts, and build process.
+
+Identify every type of stored data, including:
+- Orders and order items.
+- Payments and payment references.
+- Expenses.
+- Menu items and categories.
+- Deals and combos.
+- Tables and table assignments.
+- Staff and authentication-related settings.
+- General settings and receipt configuration.
+- Business-day records, start/end times, and report associations.
+
+Report which data currently uses browser `localStorage`, another storage mechanism, or a database.
+
+Then propose the smallest safe architectural change required to achieve persistent SQLite storage on the restaurant computer. Explain the database location, application access method, migration process, backup strategy, and limitations.
+
+**Stop and wait for my approval before implementation.**
+
+## 2. Critical deployment and architecture requirement
+
+This project currently runs as a React/Vite application in Replit. A SQLite database created inside the Replit workspace is not automatically a local database on my father's Windows computer.
+
+The final design must support SQLite stored on the restaurant computer's persistent local disk, independent of temporary Replit workspace storage.
+
+Before implementation:
+- Explicitly identify where SQLite will run and how the POS will access it.
+- Determine whether a local backend or desktop runtime is required.
+- Recommend the smallest compatible architectural change.
+- Explain which parts can be developed or tested in Replit and which require testing on Windows.
+- Do not claim that local-disk persistence is verified until it has actually been tested.
+
+If the current web-only architecture cannot meet these requirements directly, explain the blocker and wait for my approval. Do not substitute localStorage for SQLite or introduce a cloud database.
+
+Do not begin Windows packaging or printer integration in this phase.
+
+## 3. SQLite database requirements
+
+After I approve the proposed plan:
+
+1. Implement SQLite using an approach compatible with the approved architecture.
+2. Preserve the existing UI and all working POS features.
+3. Use a clear repository/data-access layer so the UI does not depend directly on database implementation details.
+4. Define an appropriate schema, primary keys, foreign keys, constraints, and indexes.
+5. Use transactions for related operations, especially order creation and associated payment writes.
+6. Preserve historical order snapshots, item quantities, receipt totals, deal prices, table assignments, payment details, cancellation records, and business-day associations.
+7. Handle database errors clearly. Never silently discard, overwrite, or partially save data.
+8. Keep reports, payment summaries, expenses, business-day reports, and Excel exports working.
+9. Avoid unnecessary dependencies and unrelated refactoring.
+
+## 4. Safe localStorage migration
+
+Provide a safe, one-time migration from existing browser `localStorage` data where applicable.
+
+Requirements:
+- Inspect the actual existing storage keys and data formats before implementing migration.
+- Validate source records and destination records.
+- Back up the original data before migration.
+- Make migration idempotent so retries cannot duplicate records.
+- Record migration status and provide useful error reporting.
+- Preserve IDs and relationships wherever possible.
+- Preserve historical values instead of recalculating old order totals using current menu prices.
+- Do not clear, reset, or delete original `localStorage` data automatically.
+- Do not silently skip invalid records; report them and explain the recovery options.
+- Make the migration safe to retry after an interruption.
+- Explain how existing browser data can be exported and imported into the eventual Windows desktop application if the browser and local SQLite runtime are separate environments.
+
+Do not claim browser data has been migrated unless the source records were actually read, imported, and verified.
+
+## 5. Backup and recovery
+
+Implement and verify a backup/recovery strategy before any destructive migration.
+
+Include:
+- A backup before migration.
+- A documented database backup location on the restaurant computer.
+- A safe way to restore from a valid backup.
+- Protection against overwriting a valid database with an empty or incomplete backup.
+- Verification that restored records and relationships are consistent.
+
+Keep backup files outside temporary Replit workspace storage for production use.
+
+## 6. Tests and verification
+
+Add or update tests for:
+- Database initialization and schema integrity.
+- Persistence after application/database restart.
+- localStorage migration and record validation.
+- Duplicate prevention when migration is retried.
+- Preservation of historical order totals and deal prices.
+- Order/payment transaction consistency.
+- Recovery from interrupted or failed writes.
+- Backup and restoration.
+- Existing reports and Excel export.
+- Existing POS functionality and regression checks.
+
+Run available type-checking, relevant tests, and the production build. Report actual results; distinguish passed, failed, skipped, and unverified checks.
+
+Do not claim Windows-specific behavior is verified using Replit-only tests.
+
+## 7. Strict constraints
+
+- Do not rebuild the application from scratch.
+- Do not redesign the existing UI.
+- Do not remove or reset existing records.
+- Do not modify unrelated features.
+- Do not introduce cloud services or a cloud database.
+- Do not start Windows packaging or printer integration yet.
+- Do not delete original localStorage data after migration.
+- Do not proceed with implementation before I approve the inspection report and migration plan.
+- Keep the existing project and GitHub history intact.
+- Make small, reviewable changes and report the files changed.
+
+## 8. Required final report
+
+After implementation and verification, report:
+1. The approved architecture and where SQLite runs.
+2. The database schema and storage location.
+3. The repository and UI changes.
+4. The localStorage migration process and safeguards.
+5. Backup and recovery procedures.
+6. Files added or changed.
+7. Tests, type-checking, and build results.
+8. What was actually verified on Windows versus Replit.
+9. Any remaining limitations or manual steps.
+
+**First action: inspect the existing project, report the findings, propose the minimal safe plan, and wait for my approval. Do not implement anything yet.**
