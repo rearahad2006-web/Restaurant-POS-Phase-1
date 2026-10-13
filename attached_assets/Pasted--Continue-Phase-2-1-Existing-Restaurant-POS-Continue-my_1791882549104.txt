@@ -1,0 +1,60 @@
+# Continue Phase 2.1 — Existing Restaurant POS
+
+Continue my existing Restaurant POS project from the latest code synced to GitHub.
+
+Repository: `rearahad2006-web/Restaurant-POS-Phase-1`
+
+Do not rebuild the application or repeat completed work unnecessarily.
+
+## Known findings from the previous Replit account
+
+- The existing React + TypeScript + Vite POS still uses `BrowserLocalRepository` and browser localStorage.
+- Existing app data uses the key `juniper-pos.phase1.data.v1`.
+- SQLite code already exists in `artifacts/restaurant-pos/server/database.mjs`.
+- The SQLite code is not yet connected to a running local HTTP service.
+- The approved architecture is a local Node service backed by SQLite, ultimately running on my father's Windows computer.
+- I approved preserving staff accounts and roles while setting new staff PINs on Windows instead of exporting existing PINs in readable JSON.
+
+## First actions
+
+1. Inspect the actual imported GitHub code and current Git status.
+2. Confirm the latest SQLite implementation and repository files are present.
+3. Check whether any Phase 2.1 work has already been completed since the previous inspection.
+4. Confirm the Preview starts and identify any differences from the previous report.
+
+If the project differs materially from the report, explain the differences before making risky changes.
+
+## Continue implementation
+
+If the imported project matches the report, continue from the existing code and implement the remaining approved work in small steps:
+
+- Audit and reuse the existing SQLite implementation.
+- Add the local Node HTTP service.
+- Connect the repository abstraction to SQLite in explicit local-Windows mode.
+- Preserve the existing Replit Preview storage mode unless a separately approved change is necessary.
+- Add safe browser-data export and validated, idempotent migration.
+- Preserve historical orders, payment relationships, deal snapshots, settings, and business-day records.
+- Back up before migration and implement recovery safeguards.
+- Provide a secure initial manager/PIN setup procedure.
+- Add tests for transactions, migration, duplicate prevention, persistence, backup/restore, and existing reports.
+
+Do not reset or delete existing data. Do not store the production database in temporary Replit storage. Do not start Windows packaging or printer integration yet.
+
+If an architectural blocker appears, stop and explain it before making risky changes.
+
+Report completed work, files changed, actual test/build results, and remaining Windows-only verification requirements. &#x20;
+
+## Implementation checkpoints and credit limits
+
+Work in small, verifiable stages to avoid wasting Replit Agent credits.
+
+1. First inspect the imported code and confirm the current state.
+2. Implement the local Node service and SQLite connection as the first stage.
+3. Run the available checks and report the exact results before continuing.
+4. Continue migration, backups, recovery, and tests in separate, focused stages.
+5. Keep each stage small enough to review and roll back.
+6. Do not repeat completed work or make unrelated changes.
+7. Before risky database changes, create a recoverable checkpoint and verify the backup.
+8. Never report a feature as complete unless it has been implemented and tested.
+
+If the daily usage limit is reached, leave the project in a recoverable state and report the last completed step and the exact next step.
