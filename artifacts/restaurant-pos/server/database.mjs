@@ -4,6 +4,57 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const SCHEMA_VERSION = 1;
+const DATABASE_TABLES = [
+  'app_meta',
+  'restaurant_settings',
+  'users',
+  'pos_tables',
+  'categories',
+  'menu_items',
+  'deals',
+  'deal_items',
+  'business_days',
+  'orders',
+  'order_items',
+  'order_deals',
+  'order_deal_items',
+  'payments',
+  'expenses',
+];
+const RESTORE_DELETE_ORDER = [
+  'payments',
+  'order_items',
+  'order_deal_items',
+  'order_deals',
+  'orders',
+  'expenses',
+  'deal_items',
+  'deals',
+  'menu_items',
+  'categories',
+  'pos_tables',
+  'business_days',
+  'users',
+  'restaurant_settings',
+  'app_meta',
+];
+const RESTORE_INSERT_ORDER = [
+  'app_meta',
+  'restaurant_settings',
+  'users',
+  'pos_tables',
+  'categories',
+  'menu_items',
+  'deals',
+  'deal_items',
+  'business_days',
+  'orders',
+  'order_items',
+  'order_deals',
+  'order_deal_items',
+  'payments',
+  'expenses',
+];
 const PAYMENT_METHODS = new Set(['Cash', 'Card', 'Easypaisa', 'JazzCash', 'Other']);
 const ORDER_TYPES = new Set(['Dine-in', 'Takeaway', 'Delivery']);
 const ORDER_STATUSES = new Set(['paid', 'cancelled']);
@@ -720,6 +771,54 @@ export function loadAppData(db) {
     ...(row.business_day_id == null ? {} : { businessDayId: row.business_day_id }),
   }));
   return { users, settings, tables, categories, menuItems, orders: ordersWithPayment, payments, expenses, deals, businessDays };
+}
+
+export function validateRestaurantDatabase(db) {
+  const version = db.pragma('user_version', { simple: true });
+  if (version !== SCHEMA_VERSION) {
+    throw new Error(`Database schema version ${version} is incompatible with this app (expected ${SCHEMA_VERSION}).`);
+  }
+  const actualTables = db.prepare(`
+    SELECT name FROM main.sqlite_master
+    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+    ORDER BY name
+  `).all().map(row => row.name);
+  const expectedTables = [...DATABASE_TABLES].sort();
+  if (actualTables.length !== expectedTables.length || actualTables.some((name, index) => name !== expectedTables[index])) {
+    throw new Error('The SQLite backup does not contain the expected Restaurant POS tables.');
+  }
+  const integrity = db.pragma('integrity_check', { simple: true });
+  if (integrity !== 'ok') throw new Error(`SQLite integrity check failed: ${integrity}`);
+  const foreignKeyErrors = db.pragma('foreign_key_check');
+  if (foreignKeyErrors.length) throw new Error('The SQLite backup contains invalid record relationships.');
+  const data = loadAppData(db);
+  validateAppData(data);
+  return data;
+}
+
+export function restoreRestaurantDatabase(db, backupPath) {
+  const absoluteBackupPath = path.resolve(backupPath);
+  const sourceDb = new Database(absoluteBackupPath, { readonly: true, fileMustExist: true });
+  try {
+    validateRestaurantDatabase(sourceDb);
+  } finally {
+    sourceDb.close();
+  }
+
+  db.prepare('ATTACH DATABASE ? AS restore_candidate').run(absoluteBackupPath);
+  try {
+    const replaceData = db.transaction(() => {
+      for (const table of RESTORE_DELETE_ORDER) db.exec(`DELETE FROM main.${table}`);
+      for (const table of RESTORE_INSERT_ORDER) {
+        db.exec(`INSERT INTO main.${table} SELECT * FROM restore_candidate.${table}`);
+      }
+      const restored = validateRestaurantDatabase(db);
+      return restored;
+    });
+    return replaceData();
+  } finally {
+    db.exec('DETACH DATABASE restore_candidate');
+  }
 }
 
 export function getBootstrapInfo(db, developmentMode) {

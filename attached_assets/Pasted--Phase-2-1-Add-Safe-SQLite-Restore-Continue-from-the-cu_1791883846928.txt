@@ -1,0 +1,45 @@
+# Phase 2.1 — Add Safe SQLite Restore
+
+Continue from the current checkpoint in the existing Restaurant POS project.
+
+The backup verification stage passed: 6/6 tests, typecheck, production build, and `git diff --check`. Preserve all existing work.
+
+## Goal
+Add a safe, app-managed SQLite restore operation so an authorized manager can recover the restaurant database from a previously verified backup.
+
+## Before editing
+1. Inspect the existing SQLite service, backup implementation, authentication, database initialization, and test suite.
+2. Reuse existing functions and conventions.
+3. Identify how the running service handles open database connections and SQLite WAL files before implementing restore.
+
+## Requirements
+- Restore only from a backup that passes SQLite integrity and the existing validation checks.
+- Create and verify a safety backup of the current database before replacing any live data.
+- Never restore directly over an active database in a way that risks losing WAL data or corrupting the database.
+- Use a safe replacement procedure appropriate for the existing service and SQLite connection lifecycle.
+- Reject missing, corrupt, incomplete, incompatible, or invalid backups without changing the live database.
+- If restoration fails, preserve the original database and provide a clear error.
+- Require manager authorization; do not expose restore to cashiers or unauthenticated users.
+- Provide a clear confirmation step before a restore replaces current data.
+- Preserve existing data relationships and historical order, payment, deal-snapshot, and business-day information.
+- Do not include staff PINs or other credentials in user-readable backup exports unnecessarily.
+- Keep the existing browser localStorage implementation and Replit Preview behavior unchanged.
+- Do not migrate, reset, or overwrite any real restaurant data during development or testing.
+
+## Tests
+Use disposable temporary databases only. Cover:
+1. Successful restore from a valid backup.
+2. Corrupt and incomplete backup rejection.
+3. Invalid backup leaves the live database unchanged.
+4. Safety backup is created and verified before replacement.
+5. Failed restore preserves recoverable original data.
+6. Historical relationships and totals survive restoration.
+7. Authorization blocks non-managers.
+8. Existing backup and transaction tests continue passing.
+
+## Constraints
+- Minimal, focused changes; no UI redesign or unrelated features.
+- Do not begin Windows packaging yet.
+- Run the complete POS test suite, typecheck, production build, and `git diff --check`.
+- Report changed files, test results, the restore procedure, and remaining Windows-specific risks.
+- Do not claim Windows recovery is verified until tested on an actual Windows installation.

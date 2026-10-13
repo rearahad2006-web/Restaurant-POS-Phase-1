@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { chmod, mkdir, rename, rm, stat } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
@@ -13,13 +13,16 @@ import {
   isEmptyDatabase,
   loadAppData,
   openRestaurantDatabase,
+  restoreRestaurantDatabase,
   saveAppData,
   validateAppData,
+  validateRestaurantDatabase,
 } from './database.mjs';
 
 const MAX_BODY_BYTES = 50 * 1024 * 1024;
 const SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
 const COOKIE_NAME = 'restaurant_pos_session';
+const VERIFIED_BACKUP_FILENAME = /^restaurant-pos-[0-9TZ-]+-[a-f0-9]{8}\.sqlite$/;
 const MIME_TYPES = new Map([
   ['.css', 'text/css; charset=utf-8'],
   ['.html', 'text/html; charset=utf-8'],
@@ -126,6 +129,27 @@ function assertCashierCanSave(db, input) {
   }
 }
 
+function backupFilename(value) {
+  if (typeof value !== 'string' || !VERIFIED_BACKUP_FILENAME.test(value)) {
+    throw new HttpError(400, 'Choose a verified Restaurant POS SQLite backup.');
+  }
+  return value;
+}
+
+async function inspectBackup(filePath) {
+  const checkDb = new Database(filePath, { readonly: true, fileMustExist: true });
+  try {
+    validateRestaurantDatabase(checkDb);
+  } finally {
+    checkDb.close();
+  }
+  const bytes = await readFile(filePath);
+  return {
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    size: bytes.byteLength,
+  };
+}
+
 async function createVerifiedBackup(db, backupDir) {
   await mkdir(backupDir, { recursive: true, mode: 0o700 });
   const stamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
@@ -134,15 +158,7 @@ async function createVerifiedBackup(db, backupDir) {
   const temporary = `${target}.partial`;
   try {
     await db.backup(temporary);
-    const checkDb = new Database(temporary, { readonly: true, fileMustExist: true });
-    try {
-      const integrity = checkDb.pragma('integrity_check', { simple: true });
-      if (integrity !== 'ok') throw new Error(`SQLite integrity check failed: ${integrity}`);
-    } finally {
-      checkDb.close();
-    }
-    const bytes = await import('node:fs/promises').then(fs => fs.readFile(temporary));
-    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const { sha256 } = await inspectBackup(temporary);
     await chmod(temporary, 0o600);
     await rename(temporary, target);
     return { filename, sha256, createdAt: new Date().toISOString() };
@@ -150,6 +166,27 @@ async function createVerifiedBackup(db, backupDir) {
     await rm(temporary, { force: true }).catch(() => {});
     throw new Error(`Could not create a verified SQLite backup: ${error.message}`);
   }
+}
+
+async function listVerifiedBackups(backupDir) {
+  const entries = await readdir(backupDir, { withFileTypes: true });
+  const backups = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !VERIFIED_BACKUP_FILENAME.test(entry.name)) continue;
+    const filePath = path.join(backupDir, entry.name);
+    try {
+      const [file, verification] = await Promise.all([stat(filePath), inspectBackup(filePath)]);
+      backups.push({
+        filename: entry.name,
+        sha256: verification.sha256,
+        size: file.size,
+        createdAt: file.mtime.toISOString(),
+      });
+    } catch {
+      // Invalid, incomplete, or incompatible files are not offered for restore.
+    }
+  }
+  return backups.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 async function serveStatic(request, response, staticDir, pathname) {
@@ -201,10 +238,24 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
   const resolvedDataDir = path.resolve(dataDir);
   const resolvedStaticDir = path.resolve(staticDir);
   const backupDir = path.join(resolvedDataDir, 'backups');
+  const databasePath = path.join(resolvedDataDir, 'restaurant-pos.sqlite');
   await mkdir(resolvedDataDir, { recursive: true, mode: 0o700 });
   await mkdir(backupDir, { recursive: true, mode: 0o700 });
-  const db = openRestaurantDatabase(path.join(resolvedDataDir, 'restaurant-pos.sqlite'));
+  const db = openRestaurantDatabase(databasePath);
   const sessions = new Map();
+  let maintenanceRequest = null;
+  let activeApiRequests = 0;
+  const apiDrainWaiters = [];
+
+  function waitForOtherApiRequests() {
+    if (activeApiRequests <= 1) return Promise.resolve();
+    return new Promise(resolve => apiDrainWaiters.push(resolve));
+  }
+
+  function notifyApiDrainWaiters() {
+    if (activeApiRequests > 1) return;
+    for (const resolve of apiDrainWaiters.splice(0)) resolve();
+  }
 
   function currentUser(request) {
     const token = readCookie(request, COOKIE_NAME);
@@ -330,6 +381,65 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
       sendJson(response, 200, backup);
       return;
     }
+    if (route === 'GET /api/backups') {
+      requireManager(request);
+      sendJson(response, 200, { backups: await listVerifiedBackups(backupDir) });
+      return;
+    }
+    if (route === 'POST /api/restore') {
+      requireManager(request);
+      if (maintenanceRequest && maintenanceRequest !== request) {
+        throw new HttpError(503, 'A database restore is already in progress. Try again shortly.');
+      }
+      maintenanceRequest = request;
+      let stagedPath = '';
+      try {
+        const input = await readJsonBody(request);
+        await waitForOtherApiRequests();
+        if (input.confirmed !== true) {
+          throw new HttpError(400, 'Confirm that you want to replace the current restaurant database before restoring.');
+        }
+        const filename = backupFilename(input.filename);
+        if (typeof input.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(input.sha256)) {
+          throw new HttpError(400, 'The selected backup is missing its verification hash.');
+        }
+        const sourcePath = path.join(backupDir, filename);
+        let sourceVerification;
+        try {
+          sourceVerification = await inspectBackup(sourcePath);
+        } catch (error) {
+          throw new HttpError(400, `The selected backup could not be verified and was not restored: ${error.message}`);
+        }
+        if (sourceVerification.sha256 !== input.sha256) {
+          throw new HttpError(400, 'The selected backup changed after verification and was not restored.');
+        }
+
+        stagedPath = path.join(resolvedDataDir, `.restore-${randomBytes(8).toString('hex')}.sqlite`);
+        await copyFile(sourcePath, stagedPath);
+        await chmod(stagedPath, 0o600);
+        const stagedVerification = await inspectBackup(stagedPath);
+        if (stagedVerification.sha256 !== input.sha256) {
+          throw new HttpError(400, 'The staged backup did not match its verification hash; the database was not changed.');
+        }
+
+        const safetyBackup = await createVerifiedBackup(db, backupDir);
+        try {
+          restoreRestaurantDatabase(db, stagedPath);
+        } catch (error) {
+          throw new HttpError(500, `Restore failed; the live database transaction was rolled back and the original data was preserved. Verified safety backup: backups/${safetyBackup.filename}. ${error.message}`);
+        }
+        sessions.clear();
+        sendJson(response, 200, {
+          restored: true,
+          backup: { filename, sha256: input.sha256 },
+          safetyBackup,
+        });
+      } finally {
+        if (stagedPath) await rm(stagedPath, { force: true }).catch(() => {});
+        maintenanceRequest = null;
+      }
+      return;
+    }
     throw new HttpError(404, 'Local POS API route not found.');
   }
 
@@ -338,7 +448,16 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
       validateLocalRequest(request);
       const url = new URL(request.url || '/', 'http://127.0.0.1');
       if (url.pathname.startsWith('/api/')) {
-        await handleApi(request, response, url);
+        if (maintenanceRequest && maintenanceRequest !== request) {
+          throw new HttpError(503, 'The local register is restoring its database. Try again shortly.');
+        }
+        activeApiRequests += 1;
+        try {
+          await handleApi(request, response, url);
+        } finally {
+          activeApiRequests -= 1;
+          notifyApiDrainWaiters();
+        }
       } else if (request.method === 'GET' || request.method === 'HEAD') {
         await serveStatic(request, response, resolvedStaticDir, url.pathname);
         if (request.method === 'HEAD') response.end();
