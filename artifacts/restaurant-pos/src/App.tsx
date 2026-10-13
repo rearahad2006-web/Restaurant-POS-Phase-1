@@ -1319,7 +1319,7 @@ function prepareLogo(file: File): Promise<string> {
 }
 
 function SettingsPage() {
-  const {data,setData,flushSave,toast}=useStore();
+  const {data,setData,flushSave,setUser,toast}=useStore();
   const [form,setForm]=useState(data.settings);
   const [saved,setSaved]=useState(true);
   const [logoError,setLogoError]=useState('');
@@ -1355,10 +1355,10 @@ function SettingsPage() {
     try{
       await flushSave();
       currentDataSaved=true;
-      const result=await localService.restoreDatabase(restoreTarget);
-      toast(`Database restored. Safety backup: ${result.safetyBackup.filename}. Sign in again to continue.`);
+      await localService.restoreDatabase(restoreTarget);
       setRestoreTarget(null);
-      window.setTimeout(()=>window.location.reload(),1200);
+      setUser(null);
+      window.location.reload();
     }catch(error){
       const message=error instanceof Error?error.message:'The database could not be restored.';
       setRestoreError(currentDataSaved?message:`Restore was not started because current POS changes could not be saved: ${message}`);
