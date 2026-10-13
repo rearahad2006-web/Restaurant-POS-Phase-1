@@ -1,0 +1,39 @@
+# Phase 2.2 — Local SQLite Runtime Verification
+
+Continue the existing Restaurant POS from the latest Phase 2.1 checkpoint. Do not rebuild the project.
+
+## Confirmed baseline
+- Phase 2.1 restore work is complete.
+- POS tests: 10/10 passed.
+- Typecheck, production build, and git diff --check passed.
+- Preview loads the browser-mode sign-in page.
+- Replit Preview uses browser storage. The actual local SQLite screen and Windows runtime have not yet been verified.
+- The unrelated API Server and mockup-sandbox workflows may have dependency issues. Do not investigate them unless the POS directly requires them.
+
+## Goal
+Verify the existing local SQLite runtime and correct only demonstrated defects.
+
+## Instructions
+1. Inspect existing documentation and tests first; reuse prior audit findings. Do not repeat the Phase 2.1 restore audit.
+2. Trace how the local Node service starts, selects the SQLite repository, initializes the database path, authenticates managers and cashiers, saves data, and reloads data.
+3. Use disposable test data and a temporary database. Never use or overwrite real restaurant data.
+4. Verify:
+   - The local service starts and reports clear startup errors.
+   - Local mode actually uses SQLite, not browser localStorage.
+   - Initial manager setup and subsequent manager/cashier sign-in work as designed.
+   - Creating an order and payment persists after service restart.
+   - Settings and other supported data survive restart.
+   - Database write failures are surfaced clearly rather than silently ignored.
+   - Invalid or missing database files do not silently reset the restaurant data.
+   - Local service endpoints are restricted to loopback unless the existing design explicitly requires otherwise.
+   - Sessions and authorization remain enforced.
+5. Add focused automated tests for any missing critical checks.
+6. Do not implement Windows packaging, change unrelated UI, change dependency versions, modify the pnpm lockfile, or redesign storage.
+7. Keep Replit Preview/browser localStorage behavior unchanged.
+
+## Final checks
+Run the full POS test suite, typecheck, production build, and git diff --check. Report exact tests, changed files, and remaining risks.
+
+Important: do not claim actual Windows runtime verification. If Replit cannot run the local SQLite service in a faithful way, identify what must be tested later on Windows rather than simulating success.
+
+Create a checkpoint after successful verification.
