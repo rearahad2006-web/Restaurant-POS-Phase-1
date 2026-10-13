@@ -23,6 +23,16 @@ export interface LocalDatabaseBackup {
   createdAt: string;
 }
 
+export interface VerifiedLocalDatabaseBackup extends LocalDatabaseBackup {
+  size: number;
+}
+
+export interface LocalDatabaseRestoreResult {
+  restored: true;
+  backup: Pick<LocalDatabaseBackup, 'filename' | 'sha256'>;
+  safetyBackup: LocalDatabaseBackup;
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -103,6 +113,18 @@ export const localService = {
 
   backupDatabase(): Promise<LocalDatabaseBackup> {
     return requestJson('/api/backup', { method: 'POST', body: '{}' });
+  },
+
+  async listDatabaseBackups(): Promise<VerifiedLocalDatabaseBackup[]> {
+    const result = await requestJson<{ backups: VerifiedLocalDatabaseBackup[] }>('/api/backups');
+    return result.backups;
+  },
+
+  restoreDatabase(input: Pick<LocalDatabaseBackup, 'filename' | 'sha256'>): Promise<LocalDatabaseRestoreResult> {
+    return requestJson('/api/restore', {
+      method: 'POST',
+      body: JSON.stringify({ ...input, confirmed: true }),
+    });
   },
 };
 

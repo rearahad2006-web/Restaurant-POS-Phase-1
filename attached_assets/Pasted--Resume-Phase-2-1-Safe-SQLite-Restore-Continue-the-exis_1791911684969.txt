@@ -1,0 +1,35 @@
+# Resume Phase 2.1 — Safe SQLite Restore
+
+Continue the existing Restaurant POS from the latest checkpoint.
+
+## Confirmed environment
+- The POS dependency installation succeeded using the existing pnpm lockfile.
+- POS Preview is running.
+- POS typecheck and production build passed.
+- The full-workspace install is blocked because Replit's security firewall denies the archive for proxy-addr@2.0.7. The POS dependency graph does not include the separate API Server.
+- No dependency versions, manifests, workspace configuration, or lockfile were changed.
+- SQLite backup verification tests previously passed.
+- App-managed SQLite restore is still unconfirmed.
+
+## Task
+Inspect the current restore-related code and latest working-tree changes once. Reuse existing code and findings; do not repeat dependency installation or firewall investigation.
+
+Implement the smallest safe, manager-authorized SQLite restore operation that:
+1. Validates a compatible backup before touching live data.
+2. Creates and verifies a safety backup of the current database.
+3. Safely handles SQLite connections and WAL files.
+4. Requires manager authorization and explicit confirmation.
+5. Rejects corrupt or incompatible backups without modifying live data.
+6. Preserves original data if restoration fails.
+7. Preserves orders, payments, deal snapshots, business-day records, relationships, and historical totals.
+8. Leaves browser localStorage and Replit Preview behavior unchanged.
+
+Use disposable test databases only. Never reset or overwrite real restaurant data.
+
+Add focused tests for successful restore, invalid backup rejection, safety backup creation, failure recovery, historical data preservation, and manager-only authorization.
+
+Run the complete POS test suite, typecheck, production build, and git diff --check. Do not install unrelated API Server dependencies or modify the lockfile to bypass the security firewall.
+
+If restore already exists, verify it and fix only demonstrated defects. If implementation cannot be completed safely, report the exact blocker.
+
+Create a checkpoint after successful verification and report changed files and test results. Do not begin Windows packaging yet.

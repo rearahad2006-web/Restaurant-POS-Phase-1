@@ -122,6 +122,25 @@ function databaseRecordCounts(db) {
   ]));
 }
 
+async function requestBackup(base, cookie) {
+  const response = await fetch(`${base}/api/backup`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: '{}',
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(body));
+  return body;
+}
+
+async function requestRestore(base, cookie, backup, confirmed = true) {
+  return fetch(`${base}/api/restore`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ filename: backup.filename, sha256: backup.sha256, confirmed }),
+  });
+}
+
 test('SQLite round-trips staff, register records and historical snapshots atomically', async t => {
   const directory = await temporaryDirectory(t, 'restaurant-pos-db-');
   const db = openRestaurantDatabase(path.join(directory, 'register.sqlite'));
@@ -295,4 +314,182 @@ test('invalid or interrupted backups are rejected without changing the valid dat
   } finally {
     service.db.backup = realBackup;
   }
+});
+
+test('manager restore replaces the live database from a verified backup and preserves historical records', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-restore-success-');
+  const { service, base, cookie, dataDir } = await startServiceWithManager(t, directory);
+  const expected = loadAppData(service.db);
+  const sourceBackup = await requestBackup(base, cookie);
+  assert.deepEqual(
+    (await readdir(service.backupDir)).filter(name => /(?:-wal|-shm|-journal)$/.test(name)),
+    [],
+    'a verified backup should be a self-contained SQLite file without sidecars',
+  );
+  const listed = await fetch(`${base}/api/backups`, { headers: { cookie } });
+  const listedBody = await listed.json();
+  assert.equal(listed.status, 200, JSON.stringify(listedBody));
+  assert.ok(listedBody.backups.some(backup => backup.filename === sourceBackup.filename && backup.sha256 === sourceBackup.sha256));
+
+  const current = structuredClone(expected);
+  current.settings.name = 'Unsaved current database state';
+  current.orders[0].total = 301;
+  current.payments[0].amount = 301;
+  saveAppData(service.db, current);
+  const currentSaved = loadAppData(service.db);
+  assert.notDeepEqual(currentSaved, expected);
+  assert.ok((await stat(path.join(dataDir, 'restaurant-pos.sqlite-wal'))).size > 0, 'the open database should contain WAL data');
+
+  const unconfirmed = await requestRestore(base, cookie, sourceBackup, false);
+  const unconfirmedBody = await unconfirmed.json();
+  assert.equal(unconfirmed.status, 400, JSON.stringify(unconfirmedBody));
+  assert.match(unconfirmedBody.error, /Confirm that you want to replace/);
+  assert.deepEqual(loadAppData(service.db), currentSaved);
+
+  const response = await requestRestore(base, cookie, sourceBackup);
+  const result = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(result));
+  assert.equal(result.restored, true);
+  assert.deepEqual(result.backup, { filename: sourceBackup.filename, sha256: sourceBackup.sha256 });
+  assert.deepEqual(loadAppData(service.db), expected);
+  assert.equal(loadAppData(service.db).orders[0].subtotal, 350);
+  assert.equal(loadAppData(service.db).orders[0].total, 330);
+  assert.equal(loadAppData(service.db).orders[0].payment.orderId, 'order-1');
+  assert.equal(loadAppData(service.db).payments[0].amount, 330);
+  assert.deepEqual(loadAppData(service.db).orders[0].deals, expected.orders[0].deals);
+  assert.deepEqual(loadAppData(service.db).businessDays, expected.businessDays);
+
+  const reopenedDb = new Database(path.join(dataDir, 'restaurant-pos.sqlite'), { readonly: true, fileMustExist: true });
+  try {
+    assert.equal(reopenedDb.pragma('integrity_check', { simple: true }), 'ok');
+    assert.deepEqual(loadAppData(reopenedDb), expected, 'a new SQLite connection should see the restored records');
+  } finally {
+    reopenedDb.close();
+  }
+
+  const safetyPath = path.join(service.backupDir, result.safetyBackup.filename);
+  const safetyBytes = await readFile(safetyPath);
+  assert.equal(createHash('sha256').update(safetyBytes).digest('hex'), result.safetyBackup.sha256);
+  const safetyDb = new Database(safetyPath, { readonly: true, fileMustExist: true });
+  try {
+    assert.equal(safetyDb.pragma('integrity_check', { simple: true }), 'ok');
+    assert.deepEqual(loadAppData(safetyDb), currentSaved);
+  } finally {
+    safetyDb.close();
+  }
+
+  const sessionResponse = await fetch(`${base}/api/session`, { headers: { cookie } });
+  assert.deepEqual(await sessionResponse.json(), { user: null }, 'restore must require a fresh sign-in');
+  assert.deepEqual((await readdir(dataDir)).filter(name => name.startsWith('.restore-')), [], 'staging database and SQLite sidecars must be removed');
+});
+
+test('corrupt and incompatible backups are rejected before live data or safety backups change', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-restore-invalid-');
+  const { service, base, cookie } = await startServiceWithManager(t, directory);
+  const original = loadAppData(service.db);
+  const sourceBackup = await requestBackup(base, cookie);
+
+  const corruptName = 'restaurant-pos-2026-10-13T08-00-00-000Z-deadbeef.sqlite';
+  const corruptPath = path.join(service.backupDir, corruptName);
+  await writeFile(corruptPath, Buffer.from('not a SQLite database'), { mode: 0o600 });
+  const corruptBytes = await readFile(corruptPath);
+  const corrupt = { filename: corruptName, sha256: createHash('sha256').update(corruptBytes).digest('hex') };
+
+  const incompatibleName = 'restaurant-pos-2026-10-13T08-00-00-000Z-feedcafe.sqlite';
+  const incompatiblePath = path.join(service.backupDir, incompatibleName);
+  await copyFile(path.join(service.backupDir, sourceBackup.filename), incompatiblePath);
+  const incompatibleDb = new Database(incompatiblePath);
+  incompatibleDb.pragma('journal_mode = DELETE');
+  incompatibleDb.pragma('user_version = 999');
+  incompatibleDb.close();
+  const incompatibleBytes = await readFile(incompatiblePath);
+  const incompatible = { filename: incompatibleName, sha256: createHash('sha256').update(incompatibleBytes).digest('hex') };
+
+  for (const backup of [corrupt, incompatible]) {
+    const response = await requestRestore(base, cookie, backup);
+    const body = await response.json();
+    assert.equal(response.status, 400, JSON.stringify(body));
+    assert.match(body.error, /could not be verified/);
+    assert.deepEqual(loadAppData(service.db), original);
+  }
+
+  const listedResponse = await fetch(`${base}/api/backups`, { headers: { cookie } });
+  const listedBody = await listedResponse.json();
+  assert.deepEqual(listedBody.backups.map(backup => backup.filename), [sourceBackup.filename]);
+  const backupFiles = (await readdir(service.backupDir)).filter(name => name.endsWith('.sqlite')).sort();
+  assert.deepEqual(backupFiles, [sourceBackup.filename, corruptName, incompatibleName].sort(), 'invalid inputs must not produce a safety backup');
+  assert.deepEqual(
+    (await readdir(service.backupDir)).filter(name => /(?:-wal|-shm|-journal)$/.test(name)),
+    [],
+    'verification should not leave SQLite sidecars',
+  );
+});
+
+test('a failed restore rolls back all changes and retains the verified safety backup', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-restore-rollback-');
+  const { service, base, cookie, dataDir } = await startServiceWithManager(t, directory);
+  const sourceBackup = await requestBackup(base, cookie);
+  const current = loadAppData(service.db);
+  current.settings.name = 'Current data that must survive a failed restore';
+  current.orders[0].total = 321;
+  current.payments[0].amount = 321;
+  saveAppData(service.db, current);
+  const expectedCurrent = loadAppData(service.db);
+  const expectedCounts = databaseRecordCounts(service.db);
+  service.db.exec(`
+    CREATE TRIGGER fail_restore_insert
+    BEFORE INSERT ON orders
+    BEGIN SELECT RAISE(ABORT, 'simulated restore failure'); END;
+  `);
+
+  const response = await requestRestore(base, cookie, sourceBackup);
+  const body = await response.json();
+  assert.equal(response.status, 500, JSON.stringify(body));
+  assert.match(body.error, /original data was preserved/);
+  assert.deepEqual(loadAppData(service.db), expectedCurrent);
+  assert.deepEqual(databaseRecordCounts(service.db), expectedCounts);
+
+  const backupsResponse = await fetch(`${base}/api/backups`, { headers: { cookie } });
+  const backupsBody = await backupsResponse.json();
+  assert.equal(backupsResponse.status, 200);
+  assert.equal(backupsBody.backups.length, 2, 'the original restore source and the safety backup should remain verified');
+  const safetyBackup = backupsBody.backups.find(backup => backup.filename !== sourceBackup.filename);
+  assert.ok(safetyBackup);
+  assert.deepEqual((await readFile(path.join(service.backupDir, safetyBackup.filename))).length, safetyBackup.size);
+  const safetyDb = new Database(path.join(service.backupDir, safetyBackup.filename), { readonly: true, fileMustExist: true });
+  try {
+    assert.deepEqual(loadAppData(safetyDb), expectedCurrent);
+  } finally {
+    safetyDb.close();
+  }
+  assert.deepEqual((await readdir(dataDir)).filter(name => name.startsWith('.restore-')), []);
+});
+
+test('cashier accounts cannot list or restore SQLite backups', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-restore-manager-only-');
+  const { service, base } = await startServiceWithManager(t, directory);
+  const data = loadAppData(service.db);
+  data.users = data.users.map(user => user.id === 'cashier-1' ? { ...user, password: 'temporary-cashier-pin' } : user);
+  saveAppData(service.db, data);
+
+  const loginResponse = await fetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'cashier', password: 'temporary-cashier-pin' }),
+  });
+  const loginBody = await loginResponse.json();
+  assert.equal(loginResponse.status, 200, JSON.stringify(loginBody));
+  const cashierCookie = loginResponse.headers.get('set-cookie')?.split(';', 1)[0];
+  assert.ok(cashierCookie);
+
+  const listResponse = await fetch(`${base}/api/backups`, { headers: { cookie: cashierCookie } });
+  assert.equal(listResponse.status, 403);
+  assert.match((await listResponse.json()).error, /Manager access is required/);
+  const restoreResponse = await fetch(`${base}/api/restore`, {
+    method: 'POST',
+    headers: { cookie: cashierCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ confirmed: true }),
+  });
+  assert.equal(restoreResponse.status, 403);
+  assert.match((await restoreResponse.json()).error, /Manager access is required/);
 });

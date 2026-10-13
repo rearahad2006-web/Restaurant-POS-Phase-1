@@ -9,6 +9,7 @@ import {
   localService,
   usesLocalSqlite,
   type LocalServiceBootstrap,
+  type VerifiedLocalDatabaseBackup,
 } from './storage/local-service';
 import {
   LocalImportGate,
@@ -1318,16 +1319,52 @@ function prepareLogo(file: File): Promise<string> {
 }
 
 function SettingsPage() {
-  const {data,setData,toast}=useStore();
+  const {data,setData,flushSave,toast}=useStore();
   const [form,setForm]=useState(data.settings);
   const [saved,setSaved]=useState(true);
   const [logoError,setLogoError]=useState('');
   const [backupResult,setBackupResult]=useState<Awaited<ReturnType<typeof localService.backupDatabase>>|null>(null);
   const [backupError,setBackupError]=useState('');
+  const [verifiedBackups,setVerifiedBackups]=useState<VerifiedLocalDatabaseBackup[]>([]);
+  const [backupListLoading,setBackupListLoading]=useState(false);
+  const [backupListError,setBackupListError]=useState('');
+  const [restoreTarget,setRestoreTarget]=useState<VerifiedLocalDatabaseBackup|null>(null);
+  const [restoreConfirmation,setRestoreConfirmation]=useState('');
+  const [restoreError,setRestoreError]=useState('');
+  const [restoreBusy,setRestoreBusy]=useState(false);
   useEffect(()=>{setForm(data.settings);setSaved(true);},[data.settings]);
   const change=(key:keyof AppData['settings'],value:string|boolean)=>{setForm(current=>({...current,[key]:value}));setSaved(false);};
   const submit=(event:FormEvent)=>{event.preventDefault();if(!form.name.trim()||!form.currency.trim()){toast('Restaurant name and currency are required.');return;}setData(current=>({...current,settings:{...current.settings,...form,name:form.name.trim(),currency:form.currency.trim().toUpperCase()}}));setSaved(true);toast('Restaurant settings saved.');};
-  const createBackup=async()=>{setBackupError('');setBackupResult(null);try{const result=await localService.backupDatabase();setBackupResult(result);toast('Verified SQLite backup created.');}catch(error){setBackupError(error instanceof Error?error.message:'Could not create the SQLite backup.');}};
+  const refreshBackupList=async()=>{
+    if(!usesLocalSqlite)return;
+    setBackupListLoading(true);
+    setBackupListError('');
+    try{setVerifiedBackups(await localService.listDatabaseBackups());}
+    catch(error){setBackupListError(error instanceof Error?error.message:'Could not read verified SQLite backups.');}
+    finally{setBackupListLoading(false);}
+  };
+  useEffect(()=>{void refreshBackupList();},[]);
+  const createBackup=async()=>{setBackupError('');setBackupResult(null);try{const result=await localService.backupDatabase();setBackupResult(result);toast('Verified SQLite backup created.');void refreshBackupList();}catch(error){setBackupError(error instanceof Error?error.message:'Could not create the SQLite backup.');}};
+  const openRestoreConfirmation=(backup:VerifiedLocalDatabaseBackup)=>{setRestoreTarget(backup);setRestoreConfirmation('');setRestoreError('');};
+  const closeRestoreConfirmation=()=>{if(restoreBusy)return;setRestoreTarget(null);setRestoreConfirmation('');setRestoreError('');};
+  const restoreBackup=async()=>{
+    if(!restoreTarget||restoreConfirmation!=='RESTORE'||restoreBusy)return;
+    setRestoreBusy(true);
+    setRestoreError('');
+    let currentDataSaved=false;
+    try{
+      await flushSave();
+      currentDataSaved=true;
+      const result=await localService.restoreDatabase(restoreTarget);
+      toast(`Database restored. Safety backup: ${result.safetyBackup.filename}. Sign in again to continue.`);
+      setRestoreTarget(null);
+      window.setTimeout(()=>window.location.reload(),1200);
+    }catch(error){
+      const message=error instanceof Error?error.message:'The database could not be restored.';
+      setRestoreError(currentDataSaved?message:`Restore was not started because current POS changes could not be saved: ${message}`);
+    }
+    finally{setRestoreBusy(false);}
+  };
   return (
     <div className="page">
       <PageHeader eyebrow="REGISTER PREFERENCES" title="Settings." subtitle="Restaurant identity, receipt presentation and data transfer." />
@@ -1370,6 +1407,40 @@ function SettingsPage() {
         {backupResult&&<div className="status-banner" role="status" style={{marginTop:12,display:'block'}}><b>Backup verified.</b> Copy saved as <code>{`backups/${backupResult.filename}`}</code><br/><span className="mono">SHA-256: {backupResult.sha256}</span></div>}
         <p className="page-subtitle" style={{marginTop:12}}>{usesLocalSqlite?'The SQLite database is stored under the current Windows user’s local application-data folder. Use the generated backup for recovery; do not copy the active database while the service is running.':'Replit Preview continues to use this browser’s local storage; exporting does not remove or modify it.'}</p>
       </section>
+      {usesLocalSqlite&&<section className="panel" style={{marginTop:16}}>
+        <div className="panel-head"><div><div className="eyebrow">RECOVERY</div><h2 className="panel-title">Restore a verified SQLite backup</h2></div><button className="btn btn-sm" type="button" onClick={()=>void refreshBackupList()} disabled={backupListLoading||restoreBusy}>{backupListLoading?'Checking…':'Refresh list'}</button></div>
+        <p className="page-subtitle">Only verified, compatible Restaurant POS backups are listed. Restoring replaces all current SQLite records. A verified safety backup of the current database is created first, and the register signs out after a successful restore.</p>
+        {backupListError&&<p className="validation" role="alert">{backupListError}</p>}
+        {backupListLoading&&!verifiedBackups.length&&<div className="status-banner" role="status">Checking for verified backups…</div>}
+        {!backupListLoading&&!backupListError&&!verifiedBackups.length&&<div className="status-banner" role="status">No verified SQLite backups are available on this computer.</div>}
+        {!!verifiedBackups.length&&<div className="table-wrap"><table className="data-table">
+          <thead><tr><th>Backup</th><th>Created</th><th>Size</th><th>SHA-256</th><th>Action</th></tr></thead>
+          <tbody>{verifiedBackups.map(backup=><tr key={backup.filename}>
+            <td><code>{backup.filename}</code></td>
+            <td><time dateTime={backup.createdAt}>{new Date(backup.createdAt).toLocaleString()}</time></td>
+            <td>{backup.size.toLocaleString()} bytes</td>
+            <td><span className="mono" title={backup.sha256}>{backup.sha256.slice(0,12)}…</span></td>
+            <td><button className="btn btn-sm btn-danger" type="button" onClick={()=>openRestoreConfirmation(backup)} disabled={restoreBusy}>Restore…</button></td>
+          </tr>)}</tbody>
+        </table></div>}
+      </section>}
+      {restoreTarget&&<Dialog title="Confirm SQLite restore" onClose={closeRestoreConfirmation}>
+        <div className="callout" role="alert">This replaces the current restaurant database with the selected backup. The app will first create a verified safety copy of the current database. All register sessions will be signed out after the restore.</div>
+        <div className="panel" style={{marginTop:14,padding:12}}>
+          <div className="stat-label">SELECTED BACKUP</div>
+          <div><code>{restoreTarget.filename}</code></div>
+          <div className="page-subtitle" style={{marginTop:5}}>{new Date(restoreTarget.createdAt).toLocaleString()} · {restoreTarget.size.toLocaleString()} bytes</div>
+        </div>
+        <div className="field" style={{marginTop:14}}>
+          <label htmlFor="restore-confirmation">Type RESTORE to confirm</label>
+          <input id="restore-confirmation" className="input" autoComplete="off" value={restoreConfirmation} onChange={event=>setRestoreConfirmation(event.target.value)} disabled={restoreBusy} data-testid="input-restore-confirmation" />
+        </div>
+        {restoreError&&<p className="validation" role="alert" data-testid="status-restore-error">{restoreError}</p>}
+        <div className="dialog-actions" style={{paddingRight:0,paddingBottom:0}}>
+          <button className="btn" type="button" onClick={closeRestoreConfirmation} disabled={restoreBusy}>Cancel</button>
+          <button className="btn btn-danger" type="button" onClick={()=>void restoreBackup()} disabled={restoreConfirmation!=='RESTORE'||restoreBusy} data-testid="button-confirm-sqlite-restore">{restoreBusy?'Restoring…':'Replace database'}</button>
+        </div>
+      </Dialog>}
     </div>
   );
 }

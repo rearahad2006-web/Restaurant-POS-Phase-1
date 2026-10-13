@@ -150,6 +150,14 @@ async function inspectBackup(filePath) {
   };
 }
 
+async function removeDatabaseArtifacts(filePath) {
+  await Promise.all(
+    ['', '-wal', '-shm', '-journal'].map(suffix =>
+      rm(`${filePath}${suffix}`, { force: true }).catch(() => {}),
+    ),
+  );
+}
+
 async function createVerifiedBackup(db, backupDir) {
   await mkdir(backupDir, { recursive: true, mode: 0o700 });
   const stamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
@@ -158,12 +166,21 @@ async function createVerifiedBackup(db, backupDir) {
   const temporary = `${target}.partial`;
   try {
     await db.backup(temporary);
+    const backupDb = new Database(temporary, { fileMustExist: true });
+    try {
+      const journalMode = backupDb.pragma('journal_mode = DELETE', { simple: true });
+      if (journalMode !== 'delete') {
+        throw new Error('The backup could not be checkpointed into a single SQLite file.');
+      }
+    } finally {
+      backupDb.close();
+    }
     const { sha256 } = await inspectBackup(temporary);
     await chmod(temporary, 0o600);
     await rename(temporary, target);
     return { filename, sha256, createdAt: new Date().toISOString() };
   } catch (error) {
-    await rm(temporary, { force: true }).catch(() => {});
+    await removeDatabaseArtifacts(temporary);
     throw new Error(`Could not create a verified SQLite backup: ${error.message}`);
   }
 }
@@ -435,7 +452,7 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
           safetyBackup,
         });
       } finally {
-        if (stagedPath) await rm(stagedPath, { force: true }).catch(() => {});
+        if (stagedPath) await removeDatabaseArtifacts(stagedPath);
         maintenanceRequest = null;
       }
       return;
