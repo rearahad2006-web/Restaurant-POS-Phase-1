@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import Database from 'better-sqlite3';
+import { createPosHttpService } from './http-service.mjs';
 import {
   authenticateUser,
   closeRestaurantDatabase,
@@ -73,6 +75,30 @@ async function temporaryDirectory(t, prefix) {
   return directory;
 }
 
+async function startServiceWithManager(t, directory) {
+  const dataDir = path.join(directory, 'service-data');
+  const service = await createPosHttpService({ dataDir, staticDir: directory, port: 0 });
+  t.after(() => service.close());
+  service.db.pragma('wal_autocheckpoint = 0');
+
+  const source = makeFixture();
+  source.users = source.users.map(user => ({ ...user, password: '', developmentOnly: false }));
+  saveAppData(service.db, source);
+  createManagerAccount(service.db, { name: 'Juniper Manager', username: 'manager', password: 'temporary-test-pin' });
+
+  const base = `http://127.0.0.1:${service.port}`;
+  const response = await fetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'manager', password: 'temporary-test-pin' }),
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(body));
+  const cookie = response.headers.get('set-cookie')?.split(';', 1)[0];
+  assert.ok(cookie, 'the temporary manager login should create a session');
+  return { service, base, cookie, dataDir };
+}
+
 function databaseRecordCounts(db) {
   const tables = [
     'restaurant_settings',
@@ -104,6 +130,7 @@ test('SQLite round-trips staff, register records and historical snapshots atomic
   const source = makeFixture();
   saveAppData(db, source);
   const loaded = loadAppData(db);
+  const countsBeforeFailure = databaseRecordCounts(db);
 
   assert.equal(loaded.settings.name, source.settings.name);
   assert.equal(loaded.menuItems[0].price, 100);
@@ -129,6 +156,8 @@ test('SQLite round-trips staff, register records and historical snapshots atomic
     businessDays: [...source.businessDays, { id: 'fail-day', businessDate: '2026-10-14', startAt: stamp, startedBy: 'Test', status: 'open' }],
   };
   assert.throws(() => saveAppData(db, failing), /forced test rollback/);
+  assert.deepEqual(databaseRecordCounts(db), countsBeforeFailure);
+  assert.deepEqual(loadAppData(db), loaded);
   assert.equal(loadAppData(db).settings.name, source.settings.name);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM business_days WHERE id = 'fail-day'").get().count, 0);
 });
@@ -192,19 +221,78 @@ test('manager setup reactivates a preserved manager account with a fresh PIN', a
   assert.equal(getBootstrapInfo(db, false).needsManagerSetup, false);
 });
 
-test('verified backups use SQLite backup and pass integrity_check', async t => {
+test('verified backup includes WAL changes and restores all POS records intact', async t => {
   const directory = await temporaryDirectory(t, 'restaurant-pos-verified-backup-');
-  const db = openRestaurantDatabase(path.join(directory, 'register.sqlite'));
-  t.after(() => closeRestaurantDatabase(db));
-  saveAppData(db, makeFixture());
+  const { service, base, cookie, dataDir } = await startServiceWithManager(t, directory);
+  const walPath = path.join(dataDir, 'restaurant-pos.sqlite-wal');
+  assert.ok((await stat(walPath)).size > 0, 'test data should include uncheckpointed WAL frames');
 
-  const target = path.join(directory, 'copy.sqlite');
-  await db.backup(target);
-  const copy = new Database(target, { readonly: true, fileMustExist: true });
+  const expected = loadAppData(service.db);
+  const beforeCounts = databaseRecordCounts(service.db);
+  const response = await fetch(`${base}/api/backup`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: '{}',
+  });
+  const backup = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(backup));
+  const backupPath = path.join(service.backupDir, backup.filename);
+  const backupBytes = await readFile(backupPath);
+  assert.equal(createHash('sha256').update(backupBytes).digest('hex'), backup.sha256);
+
+  const restoredPath = path.join(directory, 'restored.sqlite');
+  await copyFile(backupPath, restoredPath);
+  const restoredDb = new Database(restoredPath, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(copy.pragma('integrity_check', { simple: true }), 'ok');
-    assert.equal(copy.prepare('SELECT COUNT(*) AS count FROM orders').get().count, 1);
+    assert.equal(restoredDb.pragma('integrity_check', { simple: true }), 'ok');
+    assert.deepEqual(restoredDb.pragma('foreign_key_check'), []);
+    assert.deepEqual(databaseRecordCounts(restoredDb), beforeCounts);
+
+    const restored = loadAppData(restoredDb);
+    assert.deepEqual(restored, expected);
+    assert.equal(restored.orders[0].subtotal, 350);
+    assert.equal(restored.orders[0].total, 330);
+    assert.equal(restored.orders[0].payment.orderId, restored.orders[0].id);
+    assert.equal(restored.payments[0].amount, 330);
+    assert.deepEqual(restored.orders[0].deals, expected.orders[0].deals);
+    assert.deepEqual(restored.businessDays, expected.businessDays);
   } finally {
-    copy.close();
+    restoredDb.close();
+  }
+});
+
+test('invalid or interrupted backups are rejected without changing the valid database', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-failed-backup-');
+  const { service, base, cookie } = await startServiceWithManager(t, directory);
+  const originalData = loadAppData(service.db);
+  const originalCounts = databaseRecordCounts(service.db);
+  const realBackup = service.db.backup;
+  const failedBackupWriters = [
+    ['incomplete backup output', async target => {
+      await writeFile(target, Buffer.concat([Buffer.from('SQLite format 3'), Buffer.from([0]), Buffer.from('incomplete')]));
+    }],
+    ['interrupted backup operation', async target => {
+      await writeFile(target, Buffer.concat([Buffer.from('SQLite format 3'), Buffer.from([0]), Buffer.from('partial')]));
+      throw new Error('simulated interrupted backup');
+    }],
+  ];
+
+  try {
+    for (const [scenario, writeFailedBackup] of failedBackupWriters) {
+      service.db.backup = writeFailedBackup;
+      const response = await fetch(`${base}/api/backup`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: '{}',
+      });
+      const result = await response.json();
+      assert.equal(response.status, 500, scenario);
+      assert.match(result.error, /Could not create a verified SQLite backup/, scenario);
+      assert.deepEqual(await readdir(service.backupDir), [], `${scenario} must not leave a published or partial backup`);
+      assert.deepEqual(databaseRecordCounts(service.db), originalCounts, `${scenario} must not change source rows`);
+      assert.deepEqual(loadAppData(service.db), originalData, `${scenario} must not alter the valid database`);
+    }
+  } finally {
+    service.db.backup = realBackup;
   }
 });
