@@ -757,6 +757,7 @@ export async function importLegacyBackup(db, backupDir, sourceText) {
     return {
       alreadyImported: true,
       backupPath: db.prepare("SELECT value FROM app_meta WHERE key = 'legacy_backup_path'").get()?.value,
+      sha256: hash,
     };
   }
   if (!isDatabaseEmpty(db)) throw new Error('This database already contains POS data. Import is allowed only into an empty database; no existing data was changed.');

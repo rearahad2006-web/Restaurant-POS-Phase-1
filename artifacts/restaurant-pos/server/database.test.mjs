@@ -73,6 +73,29 @@ async function temporaryDirectory(t, prefix) {
   return directory;
 }
 
+function databaseRecordCounts(db) {
+  const tables = [
+    'restaurant_settings',
+    'users',
+    'pos_tables',
+    'categories',
+    'menu_items',
+    'deals',
+    'deal_items',
+    'business_days',
+    'orders',
+    'order_items',
+    'order_deals',
+    'order_deal_items',
+    'payments',
+    'expenses',
+  ];
+  return Object.fromEntries(tables.map(table => [
+    table,
+    db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count,
+  ]));
+}
+
 test('SQLite round-trips staff, register records and historical snapshots atomically', async t => {
   const directory = await temporaryDirectory(t, 'restaurant-pos-db-');
   const db = openRestaurantDatabase(path.join(directory, 'register.sqlite'));
@@ -119,14 +142,38 @@ test('legacy import verifies its source copy and is idempotent', async t => {
   transfer.users = transfer.users.map(user => ({ ...user, password: '', developmentOnly: false }));
   const sourceText = JSON.stringify(transfer);
   const first = await importLegacyBackup(db, path.join(directory, 'backups'), sourceText);
+  const countsAfterFirstImport = databaseRecordCounts(db);
   const second = await importLegacyBackup(db, path.join(directory, 'backups'), sourceText);
 
   assert.equal(first.alreadyImported, false);
   assert.equal(second.alreadyImported, true);
   assert.equal(first.sha256, second.sha256);
+  assert.equal(first.backupPath, second.backupPath);
+  assert.deepEqual(databaseRecordCounts(db), countsAfterFirstImport);
   assert.equal(await readFile(first.backupPath, 'utf8'), sourceText);
   assert.deepEqual(loadAppData(db).orders[0].deals, transfer.orders[0].deals);
   assert.equal(getBootstrapInfo(db, false).needsManagerSetup, true);
+});
+
+test('legacy import rejects a different backup once POS records exist', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-import-conflict-');
+  const db = openRestaurantDatabase(path.join(directory, 'register.sqlite'));
+  t.after(() => closeRestaurantDatabase(db));
+
+  const transfer = makeFixture();
+  transfer.users = transfer.users.map(user => ({ ...user, password: '', developmentOnly: false }));
+  await importLegacyBackup(db, path.join(directory, 'backups'), JSON.stringify(transfer));
+  const countsAfterFirstImport = databaseRecordCounts(db);
+
+  const differentTransfer = structuredClone(transfer);
+  differentTransfer.settings.name = 'Must not replace imported restaurant data';
+  await assert.rejects(
+    importLegacyBackup(db, path.join(directory, 'backups'), JSON.stringify(differentTransfer)),
+    /This database already contains POS data/,
+  );
+
+  assert.deepEqual(databaseRecordCounts(db), countsAfterFirstImport);
+  assert.equal(loadAppData(db).settings.name, transfer.settings.name);
 });
 
 test('manager setup reactivates a preserved manager account with a fresh PIN', async t => {
