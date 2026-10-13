@@ -1,0 +1,64 @@
+# Continue Restaurant POS — Phase 2.1
+
+Continue my existing Restaurant POS project imported from GitHub. Do not rebuild it.
+
+**Repository:** `rearahad2006-web/Restaurant-POS-Phase-1`
+
+## Existing architecture
+
+The previous Replit account completed the Phase 2.1 inspection and reported:
+
+- React + TypeScript + Vite client-only POS.
+- `RestaurantRepository` currently uses `BrowserLocalRepository`.
+- App data is stored in browser localStorage under `juniper-pos.phase1.data.v1`.
+- No SQLite implementation is currently configured for the POS.
+- The proposed architecture is a local Node service backed by SQLite, ultimately running on my father's Windows computer.
+
+First, verify these findings against the actual imported files and confirm the Preview works.
+
+If the project differs materially from these findings, report the differences and stop before making risky changes.
+
+## Step 1 — Inspect and plan
+
+Do not modify files yet.
+
+1. Verify the current repository, package configuration, storage layer, data models, and available tests.
+2. Confirm that the existing POS Preview starts successfully.
+3. Identify how the existing React UI will communicate with the local Node service.
+4. Explain how SQLite will run on the restaurant computer and where its database file will be stored.
+5. Explain how browser localStorage data can be safely exported and imported into the local database.
+6. Propose the smallest implementation plan, including backups, migration validation, transaction handling, tests, and recovery.
+
+Present the findings and wait for my approval before implementation.
+
+## Step 2 — Implementation after approval
+
+After I approve the plan, implement the changes in small, reviewable steps.
+
+Requirements:
+- Preserve all existing POS functionality and saved data.
+- Keep the current UI and repository abstraction wherever practical.
+- Use SQLite for persistent local storage through the approved local Node service.
+- Use transactions for related order and payment writes.
+- Add validated, idempotent migration with duplicate prevention.
+- Preserve historical order snapshots, receipt totals, deal prices, table assignments, payment details, and business-day associations.
+- Back up existing data before migration and provide a verified recovery procedure.
+- Report storage and database errors clearly.
+- Keep reports and Excel export working.
+- Add relevant tests for persistence, migration, duplicate prevention, and transaction consistency.
+- Run type-checking, tests, and production build where available.
+
+## Critical restrictions
+
+- Do not rebuild the application.
+- Do not delete, reset, or silently overwrite existing data.
+- Do not introduce cloud services or a cloud database.
+- Do not store the production SQLite database in temporary Replit storage.
+- Do not assume Replit Preview can directly access my Windows computer's local disk.
+- Do not claim Windows persistence or migration is verified until it has actually been tested on Windows.
+- Do not start Windows packaging or printer integration in this phase.
+- Preserve the GitHub repository and existing working version.
+
+Report the files changed, database design, migration safeguards, test results, and remaining limitations.
+
+**Start with Step 1 only. Inspect and report; do not implement until I approve.**
