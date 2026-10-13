@@ -805,8 +805,20 @@ export function createManagerAccount(db, { name, username, password }) {
   }
   if (!getBootstrapInfo(db, false).initialized) throw new Error('Import and verify the browser backup before creating the manager account.');
   if (!getBootstrapInfo(db, false).needsManagerSetup) throw new Error('A production manager account already exists.');
-  const id = randomUUID();
   const credentials = passwordDigest(secret);
+  const existing = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(normalizedUsername);
+  if (existing) {
+    if (existing.role !== 'Manager' || existing.password_hash) {
+      throw new Error('That username is already assigned to an account. Choose an unused username or an imported manager account without a PIN.');
+    }
+    db.prepare(`
+      UPDATE users
+      SET name = ?, password_salt = ?, password_hash = ?, development_only = 0
+      WHERE id = ?
+    `).run(displayName, credentials.salt, credentials.hash, existing.id);
+    return safeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(existing.id));
+  }
+  const id = randomUUID();
   try {
     db.prepare(`
       INSERT INTO users (id, name, username, password_salt, password_hash, role, created_at, development_only)

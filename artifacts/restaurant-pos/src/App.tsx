@@ -3,6 +3,19 @@ import { Route, Switch, Link, useLocation } from 'wouter';
 import { LayoutDashboard, ShoppingCart, UtensilsCrossed, Armchair, ClipboardList, Search, Plus, Minus, Trash2, Pencil, Printer, LogOut, Banknote, CircleDollarSign, Clock3, Check, X, ChevronRight, CircleHelp, ReceiptText, WifiOff, PackagePlus, Users, Salad, CreditCard, MapPin, Phone, FileText, AlertCircle, ArrowUpRight, BarChart3, Settings, UserRound, CalendarDays, Eye } from 'lucide-react';
 import { AppData, BusinessDay, Category, Deal, DealItem, Expense, MenuItem, Order, OrderDeal, OrderItem, OrderType, PaymentMethod, Payment, Table, UserRole, money, makeId, now } from './domain';
 import { repository } from './storage/repository';
+import {
+  downloadMigrationFile,
+  LocalServiceRepository,
+  localService,
+  usesLocalSqlite,
+  type LocalServiceBootstrap,
+} from './storage/local-service';
+import {
+  LocalImportGate,
+  LocalLoginGate,
+  LocalManagerSetupGate,
+  LocalServiceStatus,
+} from './components/LocalServiceGate';
 import { buildKitchenTokenMarkup, printCompletedOrder, printKitchenToken, printReceipt } from './services/printing';
 import './pos-workflow.css';
 import { downloadReportWorkbook } from './reporting/export-xlsx';
@@ -18,40 +31,167 @@ import {
   type ReportPeriod,
 } from './reporting/report-calculations';
 
-interface Store { data: AppData; setData: (updater: (data: AppData) => AppData) => void; user: AppData['users'][number] | null; setUser: (user: AppData['users'][number] | null) => void; draftTableId: string | null; setDraftTableId: (id: string | null) => void; recoveryDetected: boolean; setRecoveryDetected: (value: boolean) => void; toast: (message: string) => void }
+interface Store {
+  data: AppData;
+  setData: (updater: (data: AppData) => AppData) => void;
+  flushSave: () => Promise<void>;
+  retrySave: () => void;
+  persistenceError: string;
+  user: AppData['users'][number] | null;
+  setUser: (user: AppData['users'][number] | null) => void;
+  draftTableId: string | null;
+  setDraftTableId: (id: string | null) => void;
+  recoveryDetected: boolean;
+  setRecoveryDetected: (value: boolean) => void;
+  toast: (message: string) => void;
+}
 const StoreContext = createContext<Store | null>(null);
 const useStore = () => { const value = useContext(StoreContext); if (!value) throw new Error('Store unavailable'); return value; };
 const currency = (data: AppData) => data.settings.currency;
 const RUNTIME_SESSION_KEY = 'juniper-pos.runtime-session';
+const appRepository = usesLocalSqlite ? new LocalServiceRepository() : repository;
 function App() {
   const [data, setDataState] = useState<AppData | null>(null);
-  const [user, setUser] = useState<AppData['users'][number] | null>(() => { try { return JSON.parse(localStorage.getItem('juniper-pos.user') || 'null'); } catch { return null; } });
+  const dataRef = useRef<AppData | null>(null);
+  const [user, setUser] = useState<AppData['users'][number] | null>(() => {
+    if (usesLocalSqlite) return null;
+    try { return JSON.parse(localStorage.getItem('juniper-pos.user') || 'null'); } catch { return null; }
+  });
   const [draftTableId, setDraftTableId] = useState<string | null>(null);
   const [recoveryDetected, setRecoveryDetected] = useState(false);
   const [toastText, setToastText] = useState('');
+  const [bootstrap, setBootstrap] = useState<LocalServiceBootstrap | null>(null);
+  const [serviceLoading, setServiceLoading] = useState(usesLocalSqlite);
+  const [serviceError, setServiceError] = useState('');
+  const [persistenceError, setPersistenceError] = useState('');
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const lastSaveError = useRef<Error | null>(null);
+  const [, setLocation] = useLocation();
+
+  const loadSignedInData = async (signedInUser: AppData['users'][number]) => {
+    const loaded = await appRepository.load();
+    dataRef.current = loaded;
+    setDataState(loaded);
+    setUser(signedInUser);
+    setServiceError('');
+    setLocation(signedInUser.role === 'Manager' ? '/dashboard' : '/pos');
+  };
+
+  const connectLocalService = async () => {
+    setServiceLoading(true);
+    setServiceError('');
+    try {
+      const info = await localService.bootstrap();
+      setBootstrap(info);
+      if (!info.needsImport && !info.needsManagerSetup) {
+        const existingUser = await localService.session();
+        if (existingUser) {
+          const loaded = await appRepository.load();
+          dataRef.current = loaded;
+          setDataState(loaded);
+          setUser(existingUser);
+        } else {
+          dataRef.current = null;
+          setDataState(null);
+          setUser(null);
+        }
+      } else {
+        dataRef.current = null;
+        setDataState(null);
+        setUser(null);
+      }
+    } catch (error) {
+      setServiceError(error instanceof Error ? error.message : 'Could not open the local POS service.');
+    } finally {
+      setServiceLoading(false);
+    }
+  };
+
   useEffect(() => {
     try {
       setRecoveryDetected(Boolean(localStorage.getItem(RUNTIME_SESSION_KEY)));
       localStorage.setItem(RUNTIME_SESSION_KEY, JSON.stringify({ openedAt: now() }));
     } catch { /* Local persistence errors are reported by repository operations. */ }
-    repository.load().then(setDataState);
+    if (usesLocalSqlite) {
+      void connectLocalService();
+    } else {
+      appRepository.load().then(loaded => {
+        dataRef.current = loaded;
+        setDataState(loaded);
+      }).catch(error => {
+        setServiceError(error instanceof Error ? error.message : 'Could not load register data.');
+      });
+    }
   }, []);
-  const setData = (updater: (current: AppData) => AppData) => setDataState(current => {
-    if (!current) return current;
+
+  const enqueueSave = (snapshot: AppData) => {
+    saveQueue.current = saveQueue.current.then(async () => {
+      await appRepository.save(snapshot);
+      lastSaveError.current = null;
+      setPersistenceError('');
+    }).catch(error => {
+      const cause = error instanceof Error ? error : new Error('Unknown storage error.');
+      lastSaveError.current = cause;
+      setPersistenceError(cause.message);
+    });
+  };
+  const setData = (updater: (current: AppData) => AppData) => {
+    const current = dataRef.current;
+    if (!current) return;
     const next = updater(current);
-    void repository.save(next);
-    return next;
-  });
+    dataRef.current = next;
+    setDataState(next);
+    enqueueSave(next);
+  };
+  const flushSave = async () => {
+    await saveQueue.current;
+    if (lastSaveError.current) throw lastSaveError.current;
+  };
+  const retrySave = () => {
+    const current = dataRef.current;
+    if (!current) return;
+    lastSaveError.current = null;
+    enqueueSave(current);
+  };
   const toast = (message: string) => { setToastText(message); window.setTimeout(() => setToastText(''), 2600); };
+  if (usesLocalSqlite) {
+    if (serviceLoading) {
+      return <div className="login-screen"><div className="login-art"><div className="login-brand"><div className="brand-mark">J</div><div><div className="brand-name">Juniper &amp; Hearth</div><div className="brand-sub">Local service desk</div></div></div><div className="login-hero"><h1>Opening the local register.</h1><p>Checking the SQLite service on this computer.</p></div><span className="login-food-note">Your register data stays on this computer.</span></div><div className="login-form-side"><div className="panel" style={{ padding: 24, width: 320 }}><div className="stat-label">LOCAL DATABASE</div><div className="stat-value">Connecting…</div></div></div></div>;
+    }
+    if (serviceError) return <LocalServiceStatus message={serviceError} onRetry={() => { void connectLocalService(); }} />;
+    if (!bootstrap) return <LocalServiceStatus message="The local POS service did not return its setup status." onRetry={() => { void connectLocalService(); }} />;
+    if (bootstrap.needsImport) return <LocalImportGate onImported={setBootstrap} />;
+    if (bootstrap.needsManagerSetup) {
+      return <LocalManagerSetupGate
+        restaurantName={bootstrap.restaurantName}
+        onSetup={async () => {
+          const signedInUser = await localService.session();
+          if (!signedInUser) throw new Error('Manager setup completed, but sign-in could not be confirmed.');
+          await loadSignedInData(signedInUser);
+        }}
+      />;
+    }
+    if (!user) {
+      return <LocalLoginGate
+        restaurantName={bootstrap.restaurantName}
+        onLogin={async (username, password) => {
+          const signedInUser = await localService.login(username, password);
+          await loadSignedInData(signedInUser);
+        }}
+      />;
+    }
+    if (!data) return <LocalServiceStatus message="The local account is signed in, but POS data could not be loaded." onRetry={() => { void connectLocalService(); }} />;
+  }
   if (!data) return <div className="login-screen"><div className="login-art"><div className="login-brand"><div className="brand-mark">J</div><div><div className="brand-name">Juniper & Hearth</div><div className="brand-sub">Local service desk</div></div></div><div className="login-hero"><h1>Service, in good hands.</h1><p>Starting your local register and preparing today's menu.</p></div><span className="login-food-note">A neighborhood table since 2019</span></div><div className="login-form-side"><div className="panel" style={{ padding: 24, width: 320 }}><div className="stat-label">OPENING REGISTER</div><div className="stat-value">Ready shortly</div><div style={{ height: 8, borderRadius: 20, background: 'hsl(var(--secondary))' }} /></div></div></div>;
-  return <StoreContext.Provider value={{ data, setData, user, setUser, draftTableId, setDraftTableId, recoveryDetected, setRecoveryDetected, toast }}>
+  return <StoreContext.Provider value={{ data, setData, flushSave, retrySave, persistenceError, user, setUser, draftTableId, setDraftTableId, recoveryDetected, setRecoveryDetected, toast }}>
       <Switch><Route path="/login" component={LoginPage} /><Route><ProtectedShell><Switch><Route path="/" component={DashboardPage} /><Route path="/dashboard" component={DashboardPage} /><Route path="/pos" component={PosPage} /><Route path="/tables" component={TablesPage} /><Route path="/menu" component={MenuPage} /><Route path="/deals" component={DealsPage} /><Route path="/business-day" component={BusinessDayPage} /><Route path="/orders" component={OrdersPage} /><Route path="/payments" component={PaymentsPage} /><Route path="/expenses" component={ExpensesPage} /><Route path="/reports" component={ReportsPage} /><Route path="/staff" component={StaffPage} /><Route path="/settings" component={SettingsPage} /><Route component={NotFoundPage} /></Switch></ProtectedShell></Route></Switch>
     {toastText && <div className="notice" role="status" data-testid="status-notice">{toastText}</div>}
+    {persistenceError && <div className="persistence-failure" role="alert"><span><b>POS data was not saved.</b> {persistenceError}</span><button className="btn btn-sm" onClick={retrySave}>Retry save</button></div>}
   </StoreContext.Provider>;
 }
 
 function ProtectedShell({ children }: { children: ReactNode }) {
-  const { user, setUser, data, setData, recoveryDetected, setRecoveryDetected } = useStore();
+  const { user, setUser, data, setData, flushSave, recoveryDetected, setRecoveryDetected, toast } = useStore();
   const [location, setLocation] = useLocation();
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [logoutCash, setLogoutCash] = useState('');
@@ -78,19 +218,28 @@ function ProtectedShell({ children }: { children: ReactNode }) {
     { href: '/orders', label: 'Orders', icon: ClipboardList },
     { href: '/payments', label: 'Payments', icon: Banknote },
   ]);
-  const signOut = (endDay: boolean) => {
+  const signOut = async (endDay: boolean) => {
     if (endDay && openDay && user.role === 'Manager') {
       const amount = logoutCash.trim() ? Number(logoutCash) : undefined;
       setData(current => ({ ...current, businessDays: current.businessDays.map(day => day.id === openDay.id ? closeBusinessDay(day, user.name, now(), amount) : day) }));
     }
+    if (usesLocalSqlite) {
+      try {
+        await flushSave();
+        await localService.logout();
+      } catch (error) {
+        toast(error instanceof Error ? `Sign-out stopped because saving failed: ${error.message}` : 'Sign-out stopped because the local register could not save.');
+        return;
+      }
+    }
     setUser(null);
-    localStorage.removeItem('juniper-pos.user');
+    if (!usesLocalSqlite) localStorage.removeItem('juniper-pos.user');
     localStorage.removeItem(RUNTIME_SESSION_KEY);
     setRecoveryDetected(false);
     setLogoutOpen(false);
     setLocation('/login');
   };
-  return <div className={`app-shell ${data.settings.compactDisplay ? 'compact-display' : ''}`}><aside className="sidebar"><div className="brand"><div className="brand-mark">J</div><div><div className="brand-name">{data.settings.name}</div><div className="brand-sub">Local service desk</div></div></div><div className="nav-label">Restaurant</div><nav>{links.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={`nav-link ${location === href || (href === '/dashboard' && location === '/') ? 'active' : ''}`} data-testid={`link-${label.toLowerCase().replaceAll(' ', '-')}`}><Icon className="nav-icon" /><span>{label}</span></Link>)}</nav><div className="sidebar-spacer" /><div className="local-note"><b><i className="local-dot" />Stored on this device</b>Core register data is kept in this browser. No cloud connection is needed.</div><div className="sidebar-user"><div className="avatar">{user.name.split(' ').map(part => part[0]).join('').slice(0, 2)}</div><div className="user-copy"><div className="user-name">{user.name}</div><div className="user-role">{user.role} · local</div></div><button className="btn btn-quiet btn-sm" aria-label="Sign out" title="Sign out" onClick={() => { setLogoutCash(''); setLogoutOpen(true); }} data-testid="button-sign-out"><LogOut size={15} /></button></div></aside><main className="main-area"><header className="topbar"><div className="topbar-date">{new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date())}</div><div className="topbar-right"><span className="badge" data-testid="status-business-day">{openDay ? `Business day · ${openDay.businessDate}` : 'No business day open'}</span><span className="offline-pill"><i />LOCAL · READY</span></div></header>{children}
+  return <div className={`app-shell ${data.settings.compactDisplay ? 'compact-display' : ''}`}><aside className="sidebar"><div className="brand"><div className="brand-mark">J</div><div><div className="brand-name">{data.settings.name}</div><div className="brand-sub">Local service desk</div></div></div><div className="nav-label">Restaurant</div><nav>{links.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={`nav-link ${location === href || (href === '/dashboard' && location === '/') ? 'active' : ''}`} data-testid={`link-${label.toLowerCase().replaceAll(' ', '-')}`}><Icon className="nav-icon" /><span>{label}</span></Link>)}</nav><div className="sidebar-spacer" /><div className="local-note"><b><i className="local-dot" />Stored on this device</b>{usesLocalSqlite ? 'Core register data is kept in this computer’s SQLite file. No cloud connection is used.' : 'Core register data is kept in this browser. No cloud connection is needed.'}</div><div className="sidebar-user"><div className="avatar">{user.name.split(' ').map(part => part[0]).join('').slice(0, 2)}</div><div className="user-copy"><div className="user-name">{user.name}</div><div className="user-role">{user.role} · local</div></div><button className="btn btn-quiet btn-sm" aria-label="Sign out" title="Sign out" onClick={() => { setLogoutCash(''); setLogoutOpen(true); }} data-testid="button-sign-out"><LogOut size={15} /></button></div></aside><main className="main-area"><header className="topbar"><div className="topbar-date">{new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date())}</div><div className="topbar-right"><span className="badge" data-testid="status-business-day">{openDay ? `Business day · ${openDay.businessDate}` : 'No business day open'}</span><span className="offline-pill"><i />LOCAL · READY</span></div></header>{children}
     {logoutOpen && <Dialog title="Sign out" onClose={() => setLogoutOpen(false)}>
       {openDay ? <><div className="callout">Business day <b>{openDay.businessDate}</b> is still open. Ending it closes the day for new orders. Leaving it open preserves the day for another authorized staff member.</div>{user.role === 'Manager' && <div className="field" style={{ marginTop: 14 }}><label htmlFor="logout-closing-cash">Closing cash (optional)</label><input id="logout-closing-cash" type="number" min="0" step="0.01" className="input" value={logoutCash} onChange={event => setLogoutCash(event.target.value)} /></div>}</> : <p className="page-subtitle">No business day is currently open. Your saved orders and records will remain on this device.</p>}
       <div className="dialog-actions"><button className="btn" onClick={() => setLogoutOpen(false)}>Stay signed in</button><button className="btn" onClick={() => signOut(false)}>Leave day open & sign out</button>{openDay && user.role === 'Manager' && <button className="btn btn-danger" onClick={() => signOut(true)}>End day & sign out</button>}</div>
@@ -1133,9 +1282,9 @@ function StaffPage() {
   const [form,setForm]=useState({name:'',username:'',password:'',role:'Cashier' as UserRole});
   const [error,setError]=useState('');
   const open=(user?:AppData['users'][number])=>{setEditing(user?.id||'new');setForm({name:user?.name||'',username:user?.username||'',password:user?.password||'',role:user?.role||'Cashier'});setError('');};
-  const save=(event:FormEvent)=>{event.preventDefault();if(!form.name.trim()||!form.username.trim()||!form.password.trim()){setError('Name, username and PIN are required.');return;}if(data.users.some(user=>user.username.toLowerCase()===form.username.trim().toLowerCase()&&user.id!==editing)){setError('That username is already in use.');return;}setData(current=>({...current,users:editing==='new'?[...current.users,{id:makeId(),name:form.name.trim(),username:form.username.trim(),password:form.password,role:form.role,createdAt:now()}]:current.users.map(user=>user.id===editing?{...user,name:form.name.trim(),username:form.username.trim(),password:form.password,role:form.role}:user)}));toast('Staff account saved.');setEditing(null);};
+  const save=(event:FormEvent)=>{event.preventDefault();if(!form.name.trim()||!form.username.trim()||(editing==='new'&&!form.password.trim())){setError('Name and username are required. Add a PIN for a new account.');return;}if(data.users.some(user=>user.username.toLowerCase()===form.username.trim().toLowerCase()&&user.id!==editing)){setError('That username is already in use.');return;}setData(current=>({...current,users:editing==='new'?[...current.users,{id:makeId(),name:form.name.trim(),username:form.username.trim(),password:form.password,role:form.role,createdAt:now()}]:current.users.map(user=>user.id===editing?{...user,name:form.name.trim(),username:form.username.trim(),...(form.password.trim()?{password:form.password}:{}),role:form.role}:user)}));toast('Staff account saved.');setEditing(null);};
   const remove=(user:AppData['users'][number])=>{if(user.developmentOnly){toast('Development accounts are protected.');return;}if(data.users.filter(entry=>entry.role==='Manager').length===1&&user.role==='Manager'){toast('Keep at least one manager account.');return;}if(window.confirm(`Remove ${user.name}'s local account?`)){setData(current=>({...current,users:current.users.filter(entry=>entry.id!==user.id)}));toast('Account removed.');}};
-  return <div className="page"><PageHeader eyebrow="LOCAL ACCESS" title="Staff." subtitle="Local accounts for this register. Development accounts remain clearly marked." action={<button className="btn btn-primary" onClick={()=>open()}><Plus size={15}/> Add staff account</button>}/><section className="panel"><div className="panel-head"><div><div className="eyebrow">LOCAL ACCOUNTS</div><h2 className="panel-title">People on this register</h2></div><span className="badge">{data.users.length} accounts</span></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Account</th><th>Actions</th></tr></thead><tbody>{data.users.map(user=><tr key={user.id}><td><b>{user.name}</b></td><td className="mono">{user.username}</td><td><span className="badge">{user.role}</span></td><td>{user.developmentOnly?<span className="badge badge-orange">Development only</span>:'Local account'}</td><td><button className="btn btn-sm" onClick={()=>open(user)}><Pencil size={12}/> Edit</button> <button className="btn btn-sm btn-danger" disabled={!!user.developmentOnly} onClick={()=>remove(user)}><Trash2 size={12}/> Remove</button></td></tr>)}</tbody></table></div></section>{editing&&<Dialog title={editing==='new'?'Add staff account':'Edit staff account'} onClose={()=>setEditing(null)}><form onSubmit={save}><div className="form-grid"><div className="field span-2"><label>Name</label><input className="input" value={form.name} onChange={event=>setForm({...form,name:event.target.value})} required/></div><div className="field"><label>Username</label><input className="input" value={form.username} onChange={event=>setForm({...form,username:event.target.value})} required/></div><div className="field"><label>PIN / password</label><input className="input" value={form.password} onChange={event=>setForm({...form,password:event.target.value})} required/></div><div className="field span-2"><label>Role</label><select className="select" value={form.role} onChange={event=>setForm({...form,role:event.target.value as UserRole})}><option>Manager</option><option>Cashier</option></select></div></div>{error&&<p className="validation">{error}</p>}<div className="dialog-actions" style={{paddingRight:0,paddingBottom:0}}><button type="button" className="btn" onClick={()=>setEditing(null)}>Cancel</button><button className="btn btn-primary">Save account</button></div></form></Dialog>}</div>;
+  return <div className="page"><PageHeader eyebrow="LOCAL ACCESS" title="Staff." subtitle="Local accounts for this register. Development accounts remain clearly marked." action={<button className="btn btn-primary" onClick={()=>open()}><Plus size={15}/> Add staff account</button>}/><section className="panel"><div className="panel-head"><div><div className="eyebrow">LOCAL ACCOUNTS</div><h2 className="panel-title">People on this register</h2></div><span className="badge">{data.users.length} accounts</span></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Account</th><th>Actions</th></tr></thead><tbody>{data.users.map(user=><tr key={user.id}><td><b>{user.name}</b></td><td className="mono">{user.username}</td><td><span className="badge">{user.role}</span></td><td>{user.developmentOnly?<span className="badge badge-orange">Development only</span>:'Local account'}</td><td><button className="btn btn-sm" onClick={()=>open(user)}><Pencil size={12}/> Edit</button> <button className="btn btn-sm btn-danger" disabled={!!user.developmentOnly} onClick={()=>remove(user)}><Trash2 size={12}/> Remove</button></td></tr>)}</tbody></table></div></section>{editing&&<Dialog title={editing==='new'?'Add staff account':'Edit staff account'} onClose={()=>setEditing(null)}><form onSubmit={save}><div className="form-grid"><div className="field span-2"><label>Name</label><input className="input" value={form.name} onChange={event=>setForm({...form,name:event.target.value})} required/></div><div className="field"><label>Username</label><input className="input" value={form.username} onChange={event=>setForm({...form,username:event.target.value})} required/></div><div className="field"><label>{editing==='new'?'PIN / password':'New PIN / password (leave blank to keep current)'}</label><input className="input" type="password" autoComplete="new-password" value={form.password} onChange={event=>setForm({...form,password:event.target.value})} required={editing==='new'} minLength={editing==='new'?4:undefined}/></div><div className="field span-2"><label>Role</label><select className="select" value={form.role} onChange={event=>setForm({...form,role:event.target.value as UserRole})}><option>Manager</option><option>Cashier</option></select></div></div>{error&&<p className="validation">{error}</p>}<div className="dialog-actions" style={{paddingRight:0,paddingBottom:0}}><button type="button" className="btn" onClick={()=>setEditing(null)}>Cancel</button><button className="btn btn-primary">Save account</button></div></form></Dialog>}</div>;
 }
 
 function prepareLogo(file: File): Promise<string> {
@@ -1173,12 +1322,15 @@ function SettingsPage() {
   const [form,setForm]=useState(data.settings);
   const [saved,setSaved]=useState(true);
   const [logoError,setLogoError]=useState('');
+  const [backupResult,setBackupResult]=useState<Awaited<ReturnType<typeof localService.backupDatabase>>|null>(null);
+  const [backupError,setBackupError]=useState('');
   useEffect(()=>{setForm(data.settings);setSaved(true);},[data.settings]);
   const change=(key:keyof AppData['settings'],value:string|boolean)=>{setForm(current=>({...current,[key]:value}));setSaved(false);};
   const submit=(event:FormEvent)=>{event.preventDefault();if(!form.name.trim()||!form.currency.trim()){toast('Restaurant name and currency are required.');return;}setData(current=>({...current,settings:{...current.settings,...form,name:form.name.trim(),currency:form.currency.trim().toUpperCase()}}));setSaved(true);toast('Restaurant settings saved.');};
+  const createBackup=async()=>{setBackupError('');setBackupResult(null);try{const result=await localService.backupDatabase();setBackupResult(result);toast('Verified SQLite backup created.');}catch(error){setBackupError(error instanceof Error?error.message:'Could not create the SQLite backup.');}};
   return (
     <div className="page">
-      <PageHeader eyebrow="REGISTER PREFERENCES" title="Settings." subtitle="Restaurant identity and browser receipt presentation." />
+      <PageHeader eyebrow="REGISTER PREFERENCES" title="Settings." subtitle="Restaurant identity, receipt presentation and data transfer." />
       <form className="panel settings-form" onSubmit={submit}>
         <div className="panel-head"><div><div className="eyebrow">RECEIPT IDENTITY</div><h2 className="panel-title">Restaurant details</h2></div><span className="badge badge-green">Saved on this device</span></div>
         <div className="form-grid settings-grid">
@@ -1207,6 +1359,17 @@ function SettingsPage() {
         <div className="settings-actions"><span className="page-subtitle">{saved?'Changes are saved locally when submitted.':'Unsaved changes'}</span><button className="btn btn-primary" type="submit" data-testid="button-save-settings"><Check size={14}/> Save settings</button></div>
         <p className="page-subtitle"><Printer size={13}/> Receipt printing opens the browser print dialog; no physical printer integration is included.</p>
       </form>
+      <section className="panel" style={{marginTop:16}}>
+        <div className="panel-head"><div><div className="eyebrow">DATA SAFETY</div><h2 className="panel-title">Export and backup</h2></div><span className="badge">{usesLocalSqlite?'Local SQLite':'Browser storage'}</span></div>
+        <p className="page-subtitle">{usesLocalSqlite?'Create a verified SQLite copy on this computer. The JSON export can be transferred to another empty local database.':'Download a one-time migration file to transfer this register to a local Windows database.'} Migration files contain business records; staff PINs are intentionally excluded. Store exported files securely.</p>
+        <div className="settings-actions" style={{justifyContent:'flex-start',gap:10}}>
+          <button className="btn" type="button" onClick={()=>{downloadMigrationFile(data);setBackupError('');toast('Migration JSON downloaded. Staff PINs were excluded.');}}>Download migration JSON</button>
+          {usesLocalSqlite&&<button className="btn btn-primary" type="button" onClick={()=>void createBackup()}>Create verified SQLite backup</button>}
+        </div>
+        {backupError&&<p className="validation" role="alert">{backupError}</p>}
+        {backupResult&&<div className="status-banner" role="status" style={{marginTop:12,display:'block'}}><b>Backup verified.</b> Copy saved as <code>{`backups/${backupResult.filename}`}</code><br/><span className="mono">SHA-256: {backupResult.sha256}</span></div>}
+        <p className="page-subtitle" style={{marginTop:12}}>{usesLocalSqlite?'The SQLite database is stored under the current Windows user’s local application-data folder. Use the generated backup for recovery; do not copy the active database while the service is running.':'Replit Preview continues to use this browser’s local storage; exporting does not remove or modify it.'}</p>
+      </section>
     </div>
   );
 }
