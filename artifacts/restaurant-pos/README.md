@@ -62,23 +62,43 @@ This launch method uses the existing local Node service. It is a command-file la
 
 ### Prepare the web files in Replit
 
-The workspace lock configuration excludes Windows Vite/Rollup/Tailwind native build binaries. To keep the lockfile unchanged, build the static UI in Replit/Linux, then copy the generated directory to the same relative path in the Windows checkout:
+The workspace lock configuration excludes Windows Vite/Rollup/Tailwind native build binaries. To keep the lockfile unchanged, build the static UI in Replit/Linux:
 
 ```sh
 pnpm --filter @workspace/restaurant-pos run build:local
+test -f artifacts/restaurant-pos/dist/public/index.html
 ```
 
-Copy `artifacts/restaurant-pos/dist/public` to `artifacts/restaurant-pos/dist/public` in the Windows checkout. Do not run the Vite build on Windows with the current frozen lockfile.
+The build output is `artifacts/restaurant-pos/dist/public/`. Transfer that directory to the Windows machine. In PowerShell, from the Windows checkout root, copy the **contents** of the transferred `dist\public` directory into the matching checkout path. Set `$source` to the actual transferred directory:
 
-### Start and stop
-
-From the Windows checkout, run:
-
-```text
-artifacts\restaurant-pos\scripts\start-windows.cmd
+```powershell
+$source = Read-Host "Path to the transferred dist\public directory"
+$destination = ".\artifacts\restaurant-pos\dist\public"
+if (-not (Test-Path (Join-Path $source "index.html"))) { throw "Build output must contain index.html." }
+New-Item -ItemType Directory -Force -Path $destination | Out-Null
+Copy-Item -Path (Join-Path $source "*") -Destination $destination -Recurse -Force
+if (-not (Test-Path (Join-Path $destination "index.html"))) { throw "Copy did not place index.html in the checkout." }
 ```
 
-The launcher installs production dependencies using the frozen workspace lockfile, then starts the existing SQLite service. Open `http://127.0.0.1:4317`. The service binds to loopback; it is not exposed to other computers on the network. Press **Ctrl+C** in the launcher window to stop it.
+Do not run the Vite build on Windows with the current frozen lockfile.
+
+### Install, start, stop, and restart
+
+From the Windows checkout root, the launcher checks for Node.js, pnpm, and the built `index.html`. It then runs this frozen production-only install; the install is also performed automatically each time the launcher starts:
+
+```powershell
+pnpm install --prod --filter @workspace/restaurant-pos... --frozen-lockfile
+```
+
+No dependency versions or lockfile entries are changed by this command. The local service starts through the existing `start:local` package script (`node ./server/index.mjs`).
+
+Start the register from PowerShell at the Windows checkout root:
+
+```powershell
+& ".\artifacts\restaurant-pos\scripts\start-windows.cmd"
+```
+
+Open `http://127.0.0.1:4317`. The service binds only to loopback (`127.0.0.1`), not to the network. Keep the launcher window open while using the register. To stop it, press **Ctrl+C** once in that window and wait for it to exit. To restart, run the same `.cmd` command again and sign in again; service sessions are cleared on restart.
 
 The database and verified backups are stored outside the checkout:
 
@@ -87,13 +107,33 @@ The database and verified backups are stored outside the checkout:
 
 ### First-time manager setup
 
-The first local launch requires a browser migration JSON. In Replit Preview, use **Settings → Export and backup → Download migration JSON**. Keep a separate copy of that file. On the Windows register, choose it at **Import existing data**, then create a fresh Manager PIN at **Create manager access**. Imported staff PINs are cleared; after manager sign-in, set cashier PINs from **Staff**. Do not import into a data folder that contains records or a backup you need to preserve.
+For a safe launch test, use a separate disposable Windows user profile (or a disposable Windows machine) so `%LOCALAPPDATA%\JuniperPOS` is not the restaurant's live data folder. Use only sample/test data during this procedure.
 
-### Back up and recover
+1. In Replit Preview, use **Settings → Export and backup → Download migration JSON**. Keep an unchanged copy of the export outside the checkout.
+2. Start the Windows launcher and open the register. On the empty local database, choose **Import existing data** and select that migration JSON.
+3. At **Create manager access**, set a new Manager username and private PIN; do not use the Replit development PIN. Imported staff PINs are cleared. After signing in, set any required Cashier PINs in **Staff**.
 
-While signed in as Manager on the local register, use **Settings → Export and backup → Create verified SQLite backup**. The app saves a verified copy under the backups directory above. Use the in-app restore control when the live database can start.
+Do not import into a data folder that contains records or backups you need to preserve. The local service does not seed the Replit demo accounts into SQLite. A new database is empty and requires the explicit import/manager-setup steps above. Existing empty, damaged, unsupported, or incompatible databases are rejected rather than initialized from sample data. If startup reports a database error, stop and preserve the whole data folder; do not delete files or try to make the register appear empty.
 
-If startup refuses because the live database is missing or damaged, do not delete or move any backup. Stop the service and copy the entire `JuniperPOS` folder to a separate safe location first. To recover manually, rename any damaged `restaurant-pos.sqlite` file instead of deleting it, then **copy** a chosen verified `restaurant-pos-*.sqlite` backup to `%LOCALAPPDATA%\JuniperPOS\restaurant-pos.sqlite` and start the launcher again. The service validates the database before opening it. Do not copy the active database while the service is running.
+### Test order/payment persistence across restart
+
+Use only the disposable profile and sample/test records:
+
+1. Create and pay a clearly identifiable test order. Note its order number, payment method, and amount; for cash, also note amount received and change.
+2. Confirm that order appears in **Orders** and the matching payment appears in **Payments**.
+3. Stop the service with **Ctrl+C**, wait for the launcher to exit, then start it again with the same `.cmd` command.
+4. Sign in again and confirm the same order and payment details remain in **Orders** and **Payments**.
+
+### Test backup and recovery safely
+
+Restore replaces the current database. Test it only in the disposable Windows profile/machine with sample data, never in a profile containing restaurant records.
+
+1. While signed in as Manager, use **Settings → Export and backup → Create verified SQLite backup**. Note the backup filename in `%LOCALAPPDATA%\JuniperPOS\backups`.
+2. Create and pay a second identifiable test order after that backup.
+3. Use the in-app restore control to restore the earlier verified backup and confirm the replacement. Sign in again if prompted.
+4. Confirm the order created before the backup remains, the later test order is absent, and a new verified safety backup was created for the pre-restore database.
+
+For file-level recovery after a startup refusal, stop the service first and copy the entire `JuniperPOS` folder to a separate safe location. Do not delete or move any backup. Rename the damaged `restaurant-pos.sqlite` and any existing `restaurant-pos.sqlite-wal`, `restaurant-pos.sqlite-shm`, or `restaurant-pos.sqlite-journal` sidecars instead of deleting them. Then **copy** a chosen verified `restaurant-pos-*.sqlite` backup to `%LOCALAPPDATA%\JuniperPOS\restaurant-pos.sqlite` and start the launcher again. The service validates the database before opening it; if the live database is missing while verified backups exist, startup refuses to initialize a blank register. Never copy the active database while the service is running.
 
 ## Receipts
 
