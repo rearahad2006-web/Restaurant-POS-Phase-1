@@ -258,6 +258,24 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
   const databasePath = path.join(resolvedDataDir, 'restaurant-pos.sqlite');
   await mkdir(resolvedDataDir, { recursive: true, mode: 0o700 });
   await mkdir(backupDir, { recursive: true, mode: 0o700 });
+  let databaseIsMissing = false;
+  try {
+    await stat(databasePath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    databaseIsMissing = true;
+  }
+  if (databaseIsMissing) {
+    const entries = await readdir(backupDir, { withFileTypes: true });
+    const backupCandidates = entries.filter(entry => entry.isFile() && VERIFIED_BACKUP_FILENAME.test(entry.name));
+    if (backupCandidates.length) {
+      const verifiedBackups = await listVerifiedBackups(backupDir);
+      if (verifiedBackups.length) {
+        throw new Error('The local SQLite database is missing but verified backups exist; refusing to initialize a blank register. Restore a verified backup before starting the local service.');
+      }
+      throw new Error('The local SQLite database is missing and backup files exist but none could be verified; refusing to initialize a blank register.');
+    }
+  }
   const db = openRestaurantDatabase(databasePath);
   const sessions = new Map();
   let maintenanceRequest = null;

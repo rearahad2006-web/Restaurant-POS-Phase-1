@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { statSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -234,19 +235,58 @@ const schema = `
 
 export function openRestaurantDatabase(dbPath) {
   const absolutePath = path.resolve(dbPath);
-  const db = new Database(absolutePath);
-  db.pragma('foreign_keys = ON');
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = FULL');
-
-  const version = db.pragma('user_version', { simple: true });
-  if (version > SCHEMA_VERSION) {
-    db.close();
-    throw new Error(`Database schema version ${version} is newer than this app supports (${SCHEMA_VERSION}).`);
+  let existingFile = true;
+  try {
+    const fileInfo = statSync(absolutePath);
+    if (!fileInfo.isFile()) throw new Error('The local database path is not a regular file.');
+    if (fileInfo.size === 0) {
+      throw new Error('The existing SQLite database file is empty; refusing to initialize it. Restore a verified backup or confirm this is a new register.');
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    existingFile = false;
   }
-  db.exec(schema);
-  if (version === 0) db.pragma(`user_version = ${SCHEMA_VERSION}`);
-  return db;
+
+  let db;
+  try {
+    db = new Database(absolutePath);
+    const version = db.pragma('user_version', { simple: true });
+    if (version > SCHEMA_VERSION) {
+      throw new Error(`Database schema version ${version} is newer than this app supports (${SCHEMA_VERSION}).`);
+    }
+
+    if (existingFile) {
+      if (version === 0) {
+        throw new Error('The existing SQLite database has no supported schema version; refusing to initialize it.');
+      }
+      assertDatabaseTables(db, 'database');
+      assertDatabaseIntegrity(db, 'database');
+
+      const initialized = db.prepare('SELECT COUNT(*) AS count FROM restaurant_settings').get().count > 0;
+      if (initialized) {
+        validateAppData(loadAppData(db));
+      } else if (!isDatabaseEmpty(db)) {
+        throw new Error('The existing SQLite database has records but no restaurant settings; refusing to open it.');
+      }
+    } else {
+      if (version !== 0) {
+        throw new Error(`A new SQLite database unexpectedly has schema version ${version}.`);
+      }
+      db.pragma('foreign_keys = ON');
+      db.pragma('journal_mode = WAL');
+      db.pragma('synchronous = FULL');
+      db.exec(schema);
+      db.pragma(`user_version = ${SCHEMA_VERSION}`);
+    }
+
+    db.pragma('foreign_keys = ON');
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = FULL');
+    return db;
+  } catch (error) {
+    if (db?.open) db.close();
+    throw error;
+  }
 }
 
 function record(value, pathName) {
@@ -778,6 +818,14 @@ export function validateRestaurantDatabase(db) {
   if (version !== SCHEMA_VERSION) {
     throw new Error(`Database schema version ${version} is incompatible with this app (expected ${SCHEMA_VERSION}).`);
   }
+  assertDatabaseTables(db, 'backup');
+  assertDatabaseIntegrity(db, 'backup');
+  const data = loadAppData(db);
+  validateAppData(data);
+  return data;
+}
+
+function assertDatabaseTables(db, label) {
   const actualTables = db.prepare(`
     SELECT name FROM main.sqlite_master
     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
@@ -785,15 +833,15 @@ export function validateRestaurantDatabase(db) {
   `).all().map(row => row.name);
   const expectedTables = [...DATABASE_TABLES].sort();
   if (actualTables.length !== expectedTables.length || actualTables.some((name, index) => name !== expectedTables[index])) {
-    throw new Error('The SQLite backup does not contain the expected Restaurant POS tables.');
+    throw new Error(`The SQLite ${label} does not contain the expected Restaurant POS tables.`);
   }
+}
+
+function assertDatabaseIntegrity(db, label) {
   const integrity = db.pragma('integrity_check', { simple: true });
   if (integrity !== 'ok') throw new Error(`SQLite integrity check failed: ${integrity}`);
   const foreignKeyErrors = db.pragma('foreign_key_check');
-  if (foreignKeyErrors.length) throw new Error('The SQLite backup contains invalid record relationships.');
-  const data = loadAppData(db);
-  validateAppData(data);
-  return data;
+  if (foreignKeyErrors.length) throw new Error(`The SQLite ${label} contains invalid record relationships.`);
 }
 
 export function restoreRestaurantDatabase(db, backupPath) {

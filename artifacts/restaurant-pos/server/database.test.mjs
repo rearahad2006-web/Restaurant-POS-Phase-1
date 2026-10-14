@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -97,6 +98,47 @@ async function startServiceWithManager(t, directory) {
   const cookie = response.headers.get('set-cookie')?.split(';', 1)[0];
   assert.ok(cookie, 'the temporary manager login should create a session');
   return { service, base, cookie, dataDir };
+}
+
+async function requestJson(base, route, { method = 'GET', cookie, body, headers = {} } = {}) {
+  const requestHeaders = { ...headers };
+  if (cookie) requestHeaders.cookie = cookie;
+  if (body !== undefined) requestHeaders['content-type'] = 'application/json';
+  const response = await fetch(`${base}${route}`, {
+    method,
+    headers: requestHeaders,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    // Keep the raw response available for useful assertions when an endpoint is not JSON.
+  }
+  return { response, body: payload, text };
+}
+
+function sessionCookie(response) {
+  return response.headers.get('set-cookie')?.split(';', 1)[0] ?? '';
+}
+
+function requestLocalWithHeaders(port, headers) {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/bootstrap',
+      headers,
+    }, response => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { text += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, text }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
 }
 
 function databaseRecordCounts(db) {
@@ -492,4 +534,276 @@ test('cashier accounts cannot list or restore SQLite backups', async t => {
   });
   assert.equal(restoreResponse.status, 403);
   assert.match((await restoreResponse.json()).error, /Manager access is required/);
+});
+
+test('local service starts in SQLite mode on loopback and gates a new database behind import', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-local-runtime-');
+  const dataDir = path.join(directory, 'fresh-data');
+  const service = await createPosHttpService({ dataDir, staticDir: directory, port: 0 });
+  t.after(() => service.close());
+
+  assert.equal(service.server.address().address, '127.0.0.1');
+  const base = `http://127.0.0.1:${service.port}`;
+  const runtime = await fetch(`${base}/runtime-config.js`);
+  assert.equal(runtime.status, 200);
+  assert.match(await runtime.text(), /__RESTAURANT_POS_STORAGE__ = "sqlite"/);
+
+  const bootstrap = await requestJson(base, '/api/bootstrap');
+  assert.equal(bootstrap.response.status, 200);
+  assert.equal(bootstrap.body.initialized, false);
+  assert.equal(bootstrap.body.needsImport, true);
+  assert.equal(bootstrap.body.needsManagerSetup, false);
+
+  const defaultLogin = await requestJson(base, '/api/login', {
+    method: 'POST',
+    body: { username: 'manager', password: '2468' },
+  });
+  assert.equal(defaultLogin.response.status, 401, 'a new SQLite database must not fall back to seeded browser accounts');
+  const unauthenticatedData = await requestJson(base, '/api/data');
+  assert.equal(unauthenticatedData.response.status, 401);
+
+  const port = service.port;
+  const badHost = await requestLocalWithHeaders(port, { host: `remote.example:${port}` });
+  assert.equal(badHost.status, 403);
+  const badOrigin = await requestLocalWithHeaders(port, {
+    host: `127.0.0.1:${port}`,
+    origin: 'https://remote.example',
+  });
+  assert.equal(badOrigin.status, 403);
+});
+
+test('local startup refuses damaged or incompatible SQLite files without changing them', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-startup-safety-');
+  const staticDir = directory;
+  const serviceOptions = dataDir => ({ dataDir, staticDir, port: 0 });
+
+  const emptyDir = path.join(directory, 'empty-data');
+  await mkdir(emptyDir);
+  const emptyPath = path.join(emptyDir, 'restaurant-pos.sqlite');
+  await writeFile(emptyPath, Buffer.alloc(0));
+  await assert.rejects(createPosHttpService(serviceOptions(emptyDir)), /database file is empty/);
+  assert.equal((await stat(emptyPath)).size, 0, 'an existing empty file must not be initialized');
+
+  const corruptDir = path.join(directory, 'corrupt-data');
+  await mkdir(corruptDir);
+  const corruptPath = path.join(corruptDir, 'restaurant-pos.sqlite');
+  const corruptBytes = Buffer.from('not a SQLite database');
+  await writeFile(corruptPath, corruptBytes);
+  await assert.rejects(createPosHttpService(serviceOptions(corruptDir)), /not a database/);
+  assert.deepEqual(await readFile(corruptPath), corruptBytes);
+
+  const unversionedDir = path.join(directory, 'unversioned-data');
+  await mkdir(unversionedDir);
+  const unversionedPath = path.join(unversionedDir, 'restaurant-pos.sqlite');
+  const unversionedDb = new Database(unversionedPath);
+  unversionedDb.exec('CREATE TABLE legacy_data (value TEXT)');
+  unversionedDb.close();
+  const unversionedBytes = await readFile(unversionedPath);
+  await assert.rejects(createPosHttpService(serviceOptions(unversionedDir)), /no supported schema version/);
+  assert.deepEqual(await readFile(unversionedPath), unversionedBytes);
+
+  const missingTableDir = path.join(directory, 'missing-table-data');
+  await mkdir(missingTableDir);
+  const missingTablePath = path.join(missingTableDir, 'restaurant-pos.sqlite');
+  const missingTableDb = openRestaurantDatabase(missingTablePath);
+  missingTableDb.exec('DROP TABLE users');
+  closeRestaurantDatabase(missingTableDb);
+  const missingTableBytes = await readFile(missingTablePath);
+  await assert.rejects(createPosHttpService(serviceOptions(missingTableDir)), /database does not contain the expected Restaurant POS tables/);
+  assert.deepEqual(await readFile(missingTablePath), missingTableBytes, 'startup must not recreate a missing staff table');
+
+  const futureDir = path.join(directory, 'future-schema-data');
+  await mkdir(futureDir);
+  const futurePath = path.join(futureDir, 'restaurant-pos.sqlite');
+  const futureDb = openRestaurantDatabase(futurePath);
+  futureDb.pragma('journal_mode = DELETE');
+  futureDb.pragma('user_version = 999');
+  closeRestaurantDatabase(futureDb);
+  const futureBytes = await readFile(futurePath);
+  await assert.rejects(createPosHttpService(serviceOptions(futureDir)), /schema version 999 is newer/);
+  assert.deepEqual(await readFile(futurePath), futureBytes, 'a newer schema must be rejected before changing journal mode');
+});
+
+test('a missing live database with verified backups does not initialize an empty register', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-missing-live-database-');
+  const dataDir = path.join(directory, 'service-data');
+  let service = await createPosHttpService({ dataDir, staticDir: directory, port: 0 });
+  t.after(async () => {
+    if (service) await service.close();
+  });
+
+  const source = makeFixture();
+  source.users = source.users.map(user => ({ ...user, password: '', developmentOnly: false }));
+  saveAppData(service.db, source);
+  createManagerAccount(service.db, { name: 'Juniper Manager', username: 'manager', password: 'temporary-test-pin' });
+  const base = `http://127.0.0.1:${service.port}`;
+  const login = await requestJson(base, '/api/login', {
+    method: 'POST',
+    body: { username: 'manager', password: 'temporary-test-pin' },
+  });
+  assert.equal(login.response.status, 200, JSON.stringify(login.body));
+  const backup = await requestBackup(base, sessionCookie(login.response));
+  const backupDir = path.join(dataDir, 'backups');
+  assert.ok((await stat(path.join(backupDir, backup.filename))).size > 0);
+
+  await service.close();
+  service = null;
+  const databasePath = path.join(dataDir, 'restaurant-pos.sqlite');
+  for (const suffix of ['', '-wal', '-shm', '-journal']) {
+    await rm(`${databasePath}${suffix}`, { force: true });
+  }
+
+  let unexpectedService;
+  try {
+    unexpectedService = await createPosHttpService({ dataDir, staticDir: directory, port: 0 });
+  } catch (error) {
+    assert.match(error.message, /database is missing but verified backups exist/);
+  }
+  if (unexpectedService) {
+    await unexpectedService.close();
+    assert.fail('startup must not replace a missing live database when verified backups are available');
+  }
+  await assert.rejects(stat(databasePath), { code: 'ENOENT' });
+  assert.ok((await readdir(backupDir)).includes(backup.filename), 'the verified backup should remain available for recovery');
+});
+
+test('manager setup, manager and cashier sign-in, failed saves, and register data survive a service restart', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-restart-runtime-');
+  const dataDir = path.join(directory, 'service-data');
+  let service = await createPosHttpService({ dataDir, staticDir: directory, port: 0 });
+  t.after(async () => {
+    if (service) await service.close();
+  });
+  let base = `http://127.0.0.1:${service.port}`;
+
+  const source = makeFixture();
+  source.users = source.users.map(user => ({ ...user, password: '', developmentOnly: false }));
+  const imported = await requestJson(base, '/api/import', { method: 'POST', body: source });
+  assert.equal(imported.response.status, 200, JSON.stringify(imported.body));
+  assert.equal(imported.body.bootstrap.needsManagerSetup, true);
+
+  const setup = await requestJson(base, '/api/manager-setup', {
+    method: 'POST',
+    body: { name: 'Juniper Manager', username: 'manager', password: 'runtime-manager-pin' },
+  });
+  assert.equal(setup.response.status, 200, JSON.stringify(setup.body));
+  assert.equal(setup.body.user.role, 'Manager');
+  assert.ok(sessionCookie(setup.response), 'manager setup should issue a local session');
+
+  const managerLogin = await requestJson(base, '/api/login', {
+    method: 'POST',
+    body: { username: 'manager', password: 'runtime-manager-pin' },
+  });
+  assert.equal(managerLogin.response.status, 200, JSON.stringify(managerLogin.body));
+  assert.equal(managerLogin.body.user.role, 'Manager');
+  const managerCookie = sessionCookie(managerLogin.response);
+  assert.ok(managerCookie);
+
+  const loaded = await requestJson(base, '/api/data', { cookie: managerCookie });
+  assert.equal(loaded.response.status, 200);
+  const data = loaded.body;
+  data.settings.name = 'Restart Test Restaurant';
+  data.settings.address = 'Temporary runtime-test address';
+  data.users = data.users.map(user => user.id === 'cashier-1'
+    ? { ...user, password: 'runtime-cashier-pin' }
+    : user);
+
+  const secondOrder = structuredClone(data.orders[0]);
+  secondOrder.id = 'order-runtime-2';
+  secondOrder.orderNumber = 'JH-0002';
+  secondOrder.createdAt = '2026-10-14T09:00:00.000Z';
+  secondOrder.updatedAt = '2026-10-14T09:00:00.000Z';
+  secondOrder.customerName = 'Restart Test Guest';
+  secondOrder.subtotal = 125;
+  secondOrder.discount = 0;
+  secondOrder.total = 125;
+  secondOrder.items = [{ ...secondOrder.items[0], unitPrice: 125, quantity: 1, lineTotal: 125 }];
+  secondOrder.deals = [];
+  const secondPayment = {
+    ...data.payments[0],
+    id: 'payment-runtime-2',
+    orderId: secondOrder.id,
+    dateTime: '2026-10-14T09:00:00.000Z',
+    createdAt: '2026-10-14T09:00:00.000Z',
+    amount: 125,
+    amountReceived: 150,
+    change: 25,
+    reference: 'restart-test',
+  };
+  secondOrder.payment = secondPayment;
+  data.orders.push(secondOrder);
+  data.payments.push(secondPayment);
+
+  const saved = await requestJson(base, '/api/data', { method: 'PUT', cookie: managerCookie, body: data });
+  assert.equal(saved.response.status, 200, JSON.stringify(saved.body));
+  const expected = await requestJson(base, '/api/data', { cookie: managerCookie });
+  assert.equal(expected.response.status, 200);
+  assert.equal(expected.body.settings.name, 'Restart Test Restaurant');
+  assert.ok(expected.body.orders.some(order => order.id === secondOrder.id));
+  assert.ok(expected.body.payments.some(payment => payment.id === secondPayment.id));
+
+  service.db.exec(`
+    CREATE TRIGGER reject_runtime_settings_update
+    BEFORE UPDATE ON restaurant_settings
+    BEGIN
+      SELECT RAISE(ABORT, 'simulated runtime save failure');
+    END;
+  `);
+  const rejectedData = structuredClone(expected.body);
+  rejectedData.settings.address = 'This failed change must not be saved';
+  const failedSave = await requestJson(base, '/api/data', {
+    method: 'PUT',
+    cookie: managerCookie,
+    body: rejectedData,
+  });
+  assert.equal(failedSave.response.status, 500);
+  assert.match(failedSave.body.error, /simulated runtime save failure/);
+  const afterFailedSave = await requestJson(base, '/api/data', { cookie: managerCookie });
+  assert.deepEqual(afterFailedSave.body, expected.body, 'a failed request must not overwrite the last saved register state');
+  service.db.exec('DROP TRIGGER reject_runtime_settings_update');
+
+  const cashierLogin = await requestJson(base, '/api/login', {
+    method: 'POST',
+    body: { username: 'cashier', password: 'runtime-cashier-pin' },
+  });
+  assert.equal(cashierLogin.response.status, 200, JSON.stringify(cashierLogin.body));
+  assert.equal(cashierLogin.body.user.role, 'Cashier');
+  const cashierCookie = sessionCookie(cashierLogin.response);
+  assert.ok(cashierCookie);
+  const cashierData = structuredClone(expected.body);
+  cashierData.settings.phone = '+92 300 000 0000';
+  const cashierRestrictedSave = await requestJson(base, '/api/data', {
+    method: 'PUT',
+    cookie: cashierCookie,
+    body: cashierData,
+  });
+  assert.equal(cashierRestrictedSave.response.status, 403);
+  assert.match(cashierRestrictedSave.body.error, /Cashier accounts cannot change/);
+
+  await service.close();
+  service = await createPosHttpService({ dataDir, staticDir: directory, port: 0 });
+  base = `http://127.0.0.1:${service.port}`;
+
+  const staleManagerSession = await requestJson(base, '/api/data', { cookie: managerCookie });
+  assert.equal(staleManagerSession.response.status, 401, 'service restart should invalidate prior sessions');
+  const staleCashierSession = await requestJson(base, '/api/data', { cookie: cashierCookie });
+  assert.equal(staleCashierSession.response.status, 401, 'service restart should invalidate cashier sessions too');
+
+  const restartedManagerLogin = await requestJson(base, '/api/login', {
+    method: 'POST',
+    body: { username: 'manager', password: 'runtime-manager-pin' },
+  });
+  assert.equal(restartedManagerLogin.response.status, 200, JSON.stringify(restartedManagerLogin.body));
+  assert.equal(restartedManagerLogin.body.user.role, 'Manager');
+  const restartedManagerCookie = sessionCookie(restartedManagerLogin.response);
+  const reloaded = await requestJson(base, '/api/data', { cookie: restartedManagerCookie });
+  assert.equal(reloaded.response.status, 200);
+  assert.deepEqual(reloaded.body, expected.body, 'settings, orders, payments, and historical records should persist across restart');
+
+  const restartedCashierLogin = await requestJson(base, '/api/login', {
+    method: 'POST',
+    body: { username: 'cashier', password: 'runtime-cashier-pin' },
+  });
+  assert.equal(restartedCashierLogin.response.status, 200, JSON.stringify(restartedCashierLogin.body));
+  assert.equal(restartedCashierLogin.body.user.role, 'Cashier');
 });
