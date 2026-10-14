@@ -1,0 +1,54 @@
+# URGENT: Restaurant POS Windows Launch — 2–3 Day Deadline
+
+Continue the existing Restaurant POS project from the latest Phase 2.2 checkpoint. This is a deadline-critical task. Do not rebuild the project.
+
+## Known status
+- Phase 2.1 SQLite restore is complete; 10/10 POS tests passed.
+- Typecheck and production build previously passed.
+- The POS works in Replit Preview using browser storage.
+- A separate local Node service and SQLite runtime exist in the project.
+- Phase 2.2 inspection began but the Agent hit the daily quota before producing final findings.
+- Replit's full-workspace install is blocked by a security policy on an unrelated API Server dependency. The POS's filtered dependency installation previously succeeded.
+- Target: install and run the POS on a Windows 10 laptop within 2–3 days.
+
+## Priority 1: Establish a working local SQLite launch
+Use the existing checkpoint and inspection findings. Inspect only unresolved runtime issues.
+
+Verify:
+1. The actual local launch command and required dependencies.
+2. The local service serves the built POS and selects SQLite mode.
+3. The database is created in a durable per-user Windows data directory, not inside a temporary build directory.
+4. Manager setup and manager/cashier sign-in work.
+5. A test order and payment persist after restarting the service.
+6. Failures are visible and cannot silently replace existing data with seeded data.
+7. The service binds to loopback for local-only operation unless existing requirements explicitly state otherwise.
+
+Use disposable test databases. Never migrate or overwrite real restaurant data.
+
+## Priority 2: Prepare the simplest Windows launch method
+After the local runtime is verified, inspect existing scripts and documentation. Reuse the current local Node service.
+
+Choose the simplest reliable approach for Windows 10, such as a documented launch script, if it fits the existing architecture. Do not introduce a new framework or complex installer unless required.
+
+Document:
+- Prerequisites and exact commands.
+- How to start and stop the POS.
+- Where the SQLite database and backups are stored.
+- How to create a manager account safely.
+- How to back up and recover data.
+
+Do not claim the app is installed or tested on Windows unless it actually has been run on Windows.
+
+## Constraints
+- Preserve all existing POS features and Phase 2.1 restore work.
+- No redesign, new features, real-data migration, or destructive reset.
+- Do not change the pnpm lockfile or bypass Replit's package firewall.
+- Avoid repeated broad audits; use existing findings.
+- Make small changes and create a checkpoint after each verified milestone.
+
+## Verification
+Run the relevant local-runtime tests, full POS test suite, typecheck, production build, and git diff --check where feasible.
+
+Report immediately if the actual Windows runtime cannot be verified from Replit. State the exact remaining steps I must perform on the target laptop.
+
+Return a concise report: launch command, database location, files changed, checks passed/failed, and the next concrete action. Prioritize a safe working launch over optional improvements.

@@ -1,0 +1,1 @@
+- [POS data safety](restaurant-pos-data-safety.md) — use disposable data; never migrate or overwrite real restaurant data.
