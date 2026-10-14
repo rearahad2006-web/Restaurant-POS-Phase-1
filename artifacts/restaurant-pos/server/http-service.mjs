@@ -8,6 +8,8 @@ import {
   authenticateUser,
   closeRestaurantDatabase,
   createManagerAccount,
+  DataRevisionConflictError,
+  getDataRevision,
   getBootstrapInfo,
   importLegacyBackup,
   isEmptyDatabase,
@@ -350,6 +352,11 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
       sendJson(response, 200, { user: currentUser(request) });
       return;
     }
+    if (route === 'GET /api/revision') {
+      requireUser(request);
+      sendJson(response, 200, { revision: getDataRevision(db) });
+      return;
+    }
     if (route === 'POST /api/import') {
       if (!isEmptyDatabase(db)) throw new HttpError(409, 'Import is allowed only into an empty database; existing data was not changed.');
       const source = await readJsonBody(request);
@@ -392,7 +399,9 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
     }
     if (route === 'GET /api/data') {
       requireUser(request);
-      sendJson(response, 200, loadAppData(db));
+      sendJson(response, 200, loadAppData(db), {
+        'X-POS-Revision': String(getDataRevision(db)),
+      });
       return;
     }
     if (route === 'PUT /api/data') {
@@ -406,8 +415,29 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
           throw new HttpError(400, error.message);
         }
       }
-      saveAppData(db, input);
-      sendJson(response, 200, { ok: true });
+      const revisionHeader = request.headers['x-pos-revision'];
+      if (typeof revisionHeader !== 'string' || !/^(0|[1-9]\d*)$/.test(revisionHeader)) {
+        throw new HttpError(428, 'Reload the register before saving; a synchronization revision is required.');
+      }
+      const expectedRevision = Number(revisionHeader);
+      if (!Number.isSafeInteger(expectedRevision)) {
+        throw new HttpError(428, 'Reload the register before saving; the synchronization revision is invalid.');
+      }
+      try {
+        const revision = saveAppData(db, input, { expectedRevision });
+        sendJson(response, 200, { ok: true, revision }, {
+          'X-POS-Revision': String(revision),
+        });
+      } catch (error) {
+        if (!(error instanceof DataRevisionConflictError)) throw error;
+        sendJson(response, 409, {
+          code: error.code,
+          error: error.message,
+          revision: error.currentRevision,
+        }, {
+          'X-POS-Revision': String(error.currentRevision),
+        });
+      }
       return;
     }
     if (route === 'POST /api/backup') {
@@ -468,6 +498,7 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
           restored: true,
           backup: { filename, sha256: input.sha256 },
           safetyBackup,
+          revision: getDataRevision(db),
         });
       } finally {
         if (stagedPath) await removeDatabaseArtifacts(stagedPath);

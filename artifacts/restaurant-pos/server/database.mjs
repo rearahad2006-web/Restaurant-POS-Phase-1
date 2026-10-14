@@ -282,6 +282,7 @@ export function openRestaurantDatabase(dbPath) {
     db.pragma('foreign_keys = ON');
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = FULL');
+    ensureDataRevision(db);
     return db;
   } catch (error) {
     if (db?.open) db.close();
@@ -700,10 +701,66 @@ function protectHistoricalRows(db, tableName, incomingIds) {
   }
 }
 
-export function saveAppData(db, input) {
+export class DataRevisionConflictError extends Error {
+  constructor(currentRevision) {
+    super('This register changed in another session. The stale update was not saved.');
+    this.name = 'DataRevisionConflictError';
+    this.code = 'DATA_REVISION_CONFLICT';
+    this.currentRevision = currentRevision;
+  }
+}
+
+export function getDataRevision(db) {
+  const row = db.prepare("SELECT value FROM app_meta WHERE key = 'data_revision'").get();
+  if (!row) return 0;
+  const revision = Number(row.value);
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw new Error('The local database has an invalid synchronization revision.');
+  }
+  return revision;
+}
+
+function setDataRevision(db, revision) {
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw new Error('The local database synchronization revision is invalid.');
+  }
+  db.prepare(`
+    INSERT INTO app_meta (key, value) VALUES ('data_revision', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(String(revision));
+}
+
+function advanceDataRevision(db) {
+  const next = getDataRevision(db) + 1;
+  setDataRevision(db, next);
+  return next;
+}
+
+function ensureDataRevision(db) {
+  db.transaction(() => {
+    if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'data_revision'").get()) {
+      setDataRevision(db, 0);
+    }
+    getDataRevision(db);
+  })();
+}
+
+export function saveAppData(db, input, { expectedRevision } = {}) {
   const data = validateAppData(input);
-  const transaction = db.transaction(() => saveDataInTransaction(db, data));
-  transaction();
+  const transaction = db.transaction(() => {
+    if (expectedRevision !== undefined) {
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+        throw new Error('The supplied synchronization revision is invalid.');
+      }
+      const currentRevision = getDataRevision(db);
+      if (currentRevision !== expectedRevision) {
+        throw new DataRevisionConflictError(currentRevision);
+      }
+    }
+    saveDataInTransaction(db, data);
+    return advanceDataRevision(db);
+  });
+  return transaction();
 }
 
 export function loadAppData(db) {
@@ -853,6 +910,7 @@ export function restoreRestaurantDatabase(db, backupPath) {
     sourceDb.close();
   }
 
+  const previousRevision = getDataRevision(db);
   db.prepare('ATTACH DATABASE ? AS restore_candidate').run(absoluteBackupPath);
   try {
     const replaceData = db.transaction(() => {
@@ -860,6 +918,7 @@ export function restoreRestaurantDatabase(db, backupPath) {
       for (const table of RESTORE_INSERT_ORDER) {
         db.exec(`INSERT INTO main.${table} SELECT * FROM restore_candidate.${table}`);
       }
+      setDataRevision(db, Math.max(previousRevision, getDataRevision(db)) + 1);
       const restored = validateRestaurantDatabase(db);
       return restored;
     });
@@ -940,43 +999,50 @@ export async function importLegacyBackup(db, backupDir, sourceText) {
     putMeta.run('legacy_import_sha256', hash);
     putMeta.run('legacy_backup_path', backupPath);
     putMeta.run('legacy_imported_at', importedAt);
+    advanceDataRevision(db);
   })();
   return { alreadyImported: false, backupPath, sha256: hash };
 }
 
 export function createManagerAccount(db, { name, username, password }) {
-  const displayName = String(name ?? '').trim();
-  const normalizedUsername = String(username ?? '').trim();
-  const secret = String(password ?? '');
-  if (!displayName || !normalizedUsername || secret.trim().length < 4) {
-    throw new Error('Enter a name, username, and a PIN/password of at least four characters.');
-  }
-  if (!getBootstrapInfo(db, false).initialized) throw new Error('Import and verify the browser backup before creating the manager account.');
-  if (!getBootstrapInfo(db, false).needsManagerSetup) throw new Error('A production manager account already exists.');
-  const credentials = passwordDigest(secret);
-  const existing = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(normalizedUsername);
-  if (existing) {
-    if (existing.role !== 'Manager' || existing.password_hash) {
-      throw new Error('That username is already assigned to an account. Choose an unused username or an imported manager account without a PIN.');
+  return db.transaction(() => {
+    const displayName = String(name ?? '').trim();
+    const normalizedUsername = String(username ?? '').trim();
+    const secret = String(password ?? '');
+    if (!displayName || !normalizedUsername || secret.trim().length < 4) {
+      throw new Error('Enter a name, username, and a PIN/password of at least four characters.');
     }
-    db.prepare(`
-      UPDATE users
-      SET name = ?, password_salt = ?, password_hash = ?, development_only = 0
-      WHERE id = ?
-    `).run(displayName, credentials.salt, credentials.hash, existing.id);
-    return safeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(existing.id));
-  }
-  const id = randomUUID();
-  try {
-    db.prepare(`
-      INSERT INTO users (id, name, username, password_salt, password_hash, role, created_at, development_only)
-      VALUES (?, ?, ?, ?, ?, 'Manager', ?, 0)
-    `).run(id, displayName, normalizedUsername, credentials.salt, credentials.hash, new Date().toISOString());
-  } catch (error) {
-    if (String(error.message).includes('UNIQUE')) throw new Error('That username is already in use, including by a preserved development account.');
-    throw error;
-  }
-  return safeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
+    if (!getBootstrapInfo(db, false).initialized) throw new Error('Import and verify the browser backup before creating the manager account.');
+    if (!getBootstrapInfo(db, false).needsManagerSetup) throw new Error('A production manager account already exists.');
+    const credentials = passwordDigest(secret);
+    const existing = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(normalizedUsername);
+    let user;
+    if (existing) {
+      if (existing.role !== 'Manager' || existing.password_hash) {
+        throw new Error('That username is already assigned to an account. Choose an unused username or an imported manager account without a PIN.');
+      }
+      db.prepare(`
+        UPDATE users
+        SET name = ?, password_salt = ?, password_hash = ?, development_only = 0
+        WHERE id = ?
+      `).run(displayName, credentials.salt, credentials.hash, existing.id);
+      user = safeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(existing.id));
+    } else {
+      const id = randomUUID();
+      try {
+        db.prepare(`
+          INSERT INTO users (id, name, username, password_salt, password_hash, role, created_at, development_only)
+          VALUES (?, ?, ?, ?, ?, 'Manager', ?, 0)
+        `).run(id, displayName, normalizedUsername, credentials.salt, credentials.hash, new Date().toISOString());
+      } catch (error) {
+        if (String(error.message).includes('UNIQUE')) throw new Error('That username is already in use, including by a preserved development account.');
+        throw error;
+      }
+      user = safeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
+    }
+    advanceDataRevision(db);
+    return user;
+  })();
 }
 
 export function authenticateUser(db, username, password, developmentMode) {

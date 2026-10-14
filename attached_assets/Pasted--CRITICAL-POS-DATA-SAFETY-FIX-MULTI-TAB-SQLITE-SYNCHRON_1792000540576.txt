@@ -1,0 +1,43 @@
+# CRITICAL POS DATA-SAFETY FIX — MULTI-TAB SQLITE SYNCHRONIZATION
+
+Continue the existing Restaurant POS from commit d803712. The inspection found that each tab loads a full SQLite-backed data snapshot into its own React state and submits full snapshots through PUT /api/data. There is no revision check, and stale snapshots can overwrite newer expense, order, and payment fields.
+
+Implement the smallest reliable fix. Do not redesign the app, change the database architecture, or add Electron yet.
+
+## 1. Prevent stale writes on the server
+- Add a monotonically increasing data revision for the shared SQLite dataset.
+- Every successful data mutation must advance the revision atomically with the data save.
+- Require clients to submit the revision they originally loaded.
+- If a client's revision is stale, reject the write with a clear conflict response and return the current revision. Do not apply any part of that stale snapshot.
+- Ensure data and revision update in the same SQLite transaction.
+- Preserve historical order/payment protections, Manager/Cashier permissions, backup/restore behavior, and database migration compatibility.
+- Do not reset or reseed existing data.
+
+## 2. Handle conflicts safely in the UI
+- When a tab receives a conflict, fetch the latest server snapshot and update its displayed data.
+- Never silently resubmit an old full snapshot.
+- Never create a duplicate order or payment during conflict recovery.
+- Preserve unsaved user input where safe. If a checkout or other mutation cannot be safely rebased, show a clear message and require the user to review and confirm before retrying.
+- Display a useful error if saving fails; don't present an optimistic update as successfully saved.
+
+## 3. Keep tabs updated
+- Detect newer revisions on window focus and by a modest polling interval.
+- Support separate browser tabs and browsers connected to the same service.
+- Do not overwrite a tab's unsaved edits while refreshing.
+- Use BroadcastChannel only as an optional optimization, never as the correctness mechanism.
+
+## 4. Tests required
+Add regression tests proving:
+- Two clients load revision R; client A saves successfully; client B's stale write is rejected without altering A's data.
+- Stale expense snapshots cannot delete or revert a newer expense.
+- Stale order/payment snapshots cannot revert newer fields or create duplicates.
+- A fresh client can load and save against the latest revision.
+- Manager/Cashier permissions still work.
+- Backup and restore preserve data integrity and revision behavior.
+- Existing tests and migration cases still pass.
+
+Run the full POS test suite, typecheck, production build, and git diff check.
+
+Inspect the current repository and existing test patterns before editing. Keep changes narrowly scoped. Do not modify unrelated API Server or Component Preview workflows, change dependency versions, regenerate the lockfile unnecessarily, or claim success for tests that were not run.
+
+Create a checkpoint only after verification succeeds. Report changed files, revision/conflict behavior, test results, and any remaining risks.
