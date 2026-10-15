@@ -8,11 +8,13 @@ import {
   downloadMigrationFile,
   LocalServiceRepository,
   LocalServiceConflictError,
+  LocalServiceSessionExpiredError,
   localService,
   usesLocalSqlite,
   type LocalServiceBootstrap,
   type VerifiedLocalDatabaseBackup,
 } from './storage/local-service';
+import { refreshRegisterSnapshot } from './storage/register-sync.mjs';
 import {
   LocalImportGate,
   LocalLoginGate,
@@ -105,11 +107,73 @@ function App() {
     setRemoteUpdateAvailable(false);
   };
   const loadSignedInData = async (signedInUser: AppData['users'][number]) => {
+    const pending = pendingConflictRef.current;
+    const heldLocalChanges = localSqliteRepository && pending
+      ? { base: pending.base, local: pending.local }
+      : localSqliteRepository && dirtyRef.current && dataRef.current
+        ? { base: persistedDataRef.current || dataRef.current, local: dataRef.current }
+        : null;
     const loaded = await loadSnapshot();
     acceptSnapshot(loaded);
+    let shouldSaveRebasedChanges = false;
+    if (heldLocalChanges && localSqliteRepository) {
+      const merged = mergeAppDataSnapshots(heldLocalChanges.base, heldLocalChanges.local, loaded.data);
+      const ticketNumberCollision = merged.conflicts.some(path => path.startsWith('orders.orderNumber'));
+      dataRef.current = merged.data;
+      setDataState(merged.data);
+      pendingConflictRef.current = null;
+
+      if (merged.conflicts.length) {
+        const message = ticketNumberCollision
+          ? 'Another checkout used the same ticket number. This tab’s checkout was not resubmitted; review the latest orders before retrying it.'
+          : 'Register data changed while this tab was signed out. Review the overlapping fields before applying its held changes.';
+        pendingConflictRef.current = {
+          base: heldLocalChanges.base,
+          local: heldLocalChanges.local,
+          remote: loaded.data,
+          revision: loaded.revision,
+          paths: merged.conflicts,
+        };
+        lastSaveError.current = new Error(message);
+        setPersistenceError(message);
+        setSyncConflict({ paths: merged.conflicts, ticketNumberCollision });
+      } else if (JSON.stringify(merged.data) !== JSON.stringify(loaded.data)) {
+        dirtyRef.current = true;
+        lastSaveError.current = null;
+        setPersistenceError('');
+        setSyncConflict(null);
+        shouldSaveRebasedChanges = true;
+      } else {
+        lastSaveError.current = null;
+        setPersistenceError('');
+        setSyncConflict(null);
+      }
+    } else {
+      pendingConflictRef.current = null;
+      lastSaveError.current = null;
+      setPersistenceError('');
+      setSyncConflict(null);
+    }
     setUser(signedInUser);
     setServiceError('');
     setLocation(signedInUser.role === 'Manager' ? '/dashboard' : '/pos');
+    if (shouldSaveRebasedChanges) void startSaveLoop();
+  };
+
+  const handleExpiredSession = () => {
+    if (savingRef.current) dirtyRef.current = true;
+    const hasHeldChanges = dirtyRef.current || Boolean(pendingConflictRef.current);
+    setUser(null);
+    setLocation('/login');
+    if (hasHeldChanges) {
+      setPersistenceError('This register session expired after another session changed or restored the database. Your unsaved edits are held here and will be reconciled after you sign in again.');
+      return;
+    }
+    dataRef.current = null;
+    persistedDataRef.current = null;
+    persistedRevisionRef.current = null;
+    setDataState(null);
+    setPersistenceError('');
   };
 
   const connectLocalService = async () => {

@@ -49,6 +49,13 @@ export class LocalServiceConflictError extends Error {
   }
 }
 
+export class LocalServiceSessionExpiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LocalServiceSessionExpiredError';
+  }
+}
+
 async function requestJsonResponse<T>(url: string, init?: RequestInit): Promise<{ body: T; response: Response }> {
   let response: Response;
   try {
@@ -71,6 +78,7 @@ async function requestJsonResponse<T>(url: string, init?: RequestInit): Promise<
   }
   if (!response.ok) {
     const message = body && typeof body === 'object' && 'error' in body ? String(body.error) : `Local service request failed (${response.status}).`;
+    if (response.status === 401) throw new LocalServiceSessionExpiredError(message);
     if (response.status === 409 && body && typeof body === 'object' && 'code' in body && body.code === 'DATA_REVISION_CONFLICT') {
       const revision = 'revision' in body ? Number(body.revision) : Number.NaN;
       if (Number.isSafeInteger(revision) && revision >= 0) throw new LocalServiceConflictError(message, revision);
