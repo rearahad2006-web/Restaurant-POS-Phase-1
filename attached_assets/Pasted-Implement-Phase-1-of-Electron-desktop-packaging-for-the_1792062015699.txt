@@ -1,0 +1,27 @@
+Implement Phase 1 of Electron desktop packaging for the existing Restaurant POS.
+
+Repository state:
+- Latest commit: f776cfbac7396ff376f67be08a7b27ee99b3cb8b
+- Working tree was clean at inspection.
+- Existing POS uses a local HTTP service, SQLite through better-sqlite3, and static assets in artifacts/restaurant-pos/dist/public/.
+- The existing Windows launcher starts server/index.mjs on port 4317.
+- Database and backups must remain in %LOCALAPPDATA%\JuniperPOS and outside the application installation directory.
+
+Before editing, inspect the current commit and exact service APIs. Preserve all existing application behavior and synchronization fixes.
+
+Phase 1 scope:
+1. Add a minimal Electron main process that starts the existing HTTP service directly, without launching a separate command shell.
+2. Wait for the service to become ready before opening a BrowserWindow.
+3. Keep the UI served over HTTP on loopback because the application relies on same-origin API requests and /runtime-config.js.
+4. Use secure BrowserWindow settings: nodeIntegration false, contextIsolation true, sandbox true, and no unnecessary preload.
+5. Use a single-instance lock and handle service startup failure and application shutdown cleanly.
+6. Preserve the existing SQLite database, backup paths, restore logic, permissions, and revision/conflict protection.
+7. Do not yet add installer configuration, upgrade logic, or new application features.
+
+Before choosing the port, inspect createPosHttpService and its lifecycle. Prefer an ephemeral loopback port if supported, avoiding collisions with the existing Windows launcher. If this cannot be done safely with the current service API, document the minimal required adjustment before implementing it.
+
+Check the exact Electron and better-sqlite3 compatibility requirements before choosing versions. Do not assume the ordinary Node.js native binary works in Electron. Do not bypass security restrictions or change existing dependencies unnecessarily.
+
+Run all applicable POS tests, typecheck, production build, and diff check. Add focused tests for Electron service startup/shutdown where feasible. Report exact changed files, commands, results, and unresolved native-module packaging risks.
+
+Do not package or publish an installer in this phase. Do not claim Windows verification unless it was actually performed. Preserve the existing working POS and create a checkpoint only after successful verification.
