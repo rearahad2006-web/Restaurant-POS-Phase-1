@@ -117,6 +117,9 @@ function App() {
     acceptSnapshot(loaded);
     let shouldSaveRebasedChanges = false;
     if (heldLocalChanges && localSqliteRepository) {
+      if (loaded.revision === null) {
+        throw new Error('The local POS service did not provide a data revision.');
+      }
       const merged = mergeAppDataSnapshots(heldLocalChanges.base, heldLocalChanges.local, loaded.data);
       const ticketNumberCollision = merged.conflicts.some(path => path.startsWith('orders.orderNumber'));
       dataRef.current = merged.data;

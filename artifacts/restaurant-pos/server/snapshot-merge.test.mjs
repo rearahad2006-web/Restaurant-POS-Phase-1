@@ -46,6 +46,20 @@ test('snapshot merge keeps separate-session expense, order, and payment addition
   assert.deepEqual(new Set(merged.data.payments.map(payment => payment.id)), new Set(['payment-1', 'payment-local', 'payment-remote']));
 });
 
+test('snapshot merge keeps non-overlapping edits to the same expense', () => {
+  const base = makeFixture();
+  const local = structuredClone(base);
+  const remote = structuredClone(base);
+  local.expenses[0].purpose = 'Local produce run';
+  remote.expenses[0].total = 110;
+
+  const merged = mergeAppDataSnapshots(base, local, remote);
+
+  assert.deepEqual(merged.conflicts, []);
+  assert.equal(merged.data.expenses[0].purpose, 'Local produce run');
+  assert.equal(merged.data.expenses[0].total, 110);
+});
+
 test('snapshot merge reports overlapping edits and defaults to latest saved fields', () => {
   const base = makeFixture();
   const local = structuredClone(base);
@@ -87,7 +101,7 @@ test('revision polling refreshes orders, payments, and expenses from a second se
   latest.payments.push({ ...base.payments[0], id: 'payment-other-tab', orderId: 'order-other-tab' });
   latest.expenses.push({ ...base.expenses[0], id: 'expense-other-tab', purpose: 'Second-session expense' });
 
-  let revision = 7;
+  let revision = 8;
   let accepted = null;
   let remoteUpdateNotices = 0;
   const result = await refreshRegisterSnapshot({
@@ -100,11 +114,38 @@ test('revision polling refreshes orders, payments, and expenses from a second se
   });
 
   assert.equal(result, 'refreshed');
-  assert.equal(accepted.revision, 7);
+  assert.equal(accepted.revision, 8);
   assert.deepEqual(accepted.data.orders.map(order => order.id), ['order-1', 'order-other-tab']);
   assert.deepEqual(accepted.data.payments.map(payment => payment.id), ['payment-1', 'payment-other-tab']);
   assert.deepEqual(accepted.data.expenses.map(expense => expense.id), ['expense-1', 'expense-other-tab']);
   assert.equal(remoteUpdateNotices, 0);
+});
+
+test('revision polling refreshes a signed-in client after a backup restore advances the revision', async () => {
+  const restored = makeFixture();
+  restored.settings.name = 'Restored restaurant';
+  restored.orders[0].total = 330;
+  restored.payments[0].amount = 330;
+  restored.expenses[0].total = 45;
+
+  const previousRevision = 12;
+  const restoredRevision = 18;
+  let accepted = null;
+  const result = await refreshRegisterSnapshot({
+    getCurrentRevision: () => previousRevision,
+    readRemoteRevision: async () => restoredRevision,
+    loadSnapshot: async () => ({ data: restored, revision: restoredRevision }),
+    hasPendingChanges: () => false,
+    acceptSnapshot: snapshot => { accepted = snapshot; },
+    onRemoteUpdate: () => assert.fail('a clean client should refresh instead of reporting pending edits'),
+  });
+
+  assert.equal(result, 'refreshed');
+  assert.equal(accepted.revision, restoredRevision);
+  assert.equal(accepted.data.settings.name, 'Restored restaurant');
+  assert.equal(accepted.data.orders[0].total, 330);
+  assert.equal(accepted.data.payments[0].amount, 330);
+  assert.equal(accepted.data.expenses[0].total, 45);
 });
 
 test('revision polling never replaces local edits while another session has saved updates', async () => {

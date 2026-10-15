@@ -461,6 +461,16 @@ test('manager restore replaces the live database from a verified backup and pres
 
   const sessionResponse = await fetch(`${base}/api/session`, { headers: { cookie } });
   assert.deepEqual(await sessionResponse.json(), { user: null }, 'restore must require a fresh sign-in');
+  const refreshedLogin = await requestJson(base, '/api/login', {
+    method: 'POST',
+    body: { username: 'manager', password: 'temporary-test-pin' },
+  });
+  assert.equal(refreshedLogin.response.status, 200, JSON.stringify(refreshedLogin.body));
+  const refreshedCookie = sessionCookie(refreshedLogin.response);
+  const refreshedSnapshot = await requestJson(base, '/api/data', { cookie: refreshedCookie });
+  assert.equal(refreshedSnapshot.response.status, 200);
+  assert.equal(revisionHeader(refreshedSnapshot.response), result.revision);
+  assert.deepEqual(refreshedSnapshot.body, expected, 'a newly signed-in client should load the restored snapshot');
   assert.deepEqual((await readdir(dataDir)).filter(name => name.startsWith('.restore-')), [], 'staging database and SQLite sidecars must be removed');
 });
 
