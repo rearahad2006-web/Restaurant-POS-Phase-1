@@ -3,9 +3,11 @@ import { Route, Switch, Link, useLocation } from 'wouter';
 import { LayoutDashboard, ShoppingCart, UtensilsCrossed, Armchair, ClipboardList, Search, Plus, Minus, Trash2, Pencil, Printer, LogOut, Banknote, CircleDollarSign, Clock3, Check, X, ChevronRight, CircleHelp, ReceiptText, WifiOff, PackagePlus, Users, Salad, CreditCard, MapPin, Phone, FileText, AlertCircle, ArrowUpRight, BarChart3, Settings, UserRound, CalendarDays, Eye } from 'lucide-react';
 import { AppData, BusinessDay, Category, Deal, DealItem, Expense, MenuItem, Order, OrderDeal, OrderItem, OrderType, PaymentMethod, Payment, Table, UserRole, money, makeId, now } from './domain';
 import { repository } from './storage/repository';
+import { mergeAppDataSnapshots } from './storage/snapshot-merge.mjs';
 import {
   downloadMigrationFile,
   LocalServiceRepository,
+  LocalServiceConflictError,
   localService,
   usesLocalSqlite,
   type LocalServiceBootstrap,
@@ -37,7 +39,12 @@ interface Store {
   setData: (updater: (data: AppData) => AppData) => void;
   flushSave: () => Promise<void>;
   retrySave: () => void;
+  isSaving: boolean;
   persistenceError: string;
+  syncConflict: { paths: string[]; ticketNumberCollision: boolean } | null;
+  resolveSyncConflict: (action: 'apply' | 'discard') => void;
+  remoteUpdateAvailable: boolean;
+  refreshLatest: () => Promise<void>;
   user: AppData['users'][number] | null;
   setUser: (user: AppData['users'][number] | null) => void;
   draftTableId: string | null;
@@ -50,10 +57,24 @@ const StoreContext = createContext<Store | null>(null);
 const useStore = () => { const value = useContext(StoreContext); if (!value) throw new Error('Store unavailable'); return value; };
 const currency = (data: AppData) => data.settings.currency;
 const RUNTIME_SESSION_KEY = 'juniper-pos.runtime-session';
-const appRepository = usesLocalSqlite ? new LocalServiceRepository() : repository;
+const localSqliteRepository = usesLocalSqlite ? new LocalServiceRepository() : null;
+const appRepository = localSqliteRepository || repository;
+type PendingSyncConflict = {
+  base: AppData;
+  local: AppData;
+  remote: AppData;
+  revision: number;
+  paths: string[];
+};
 function App() {
   const [data, setDataState] = useState<AppData | null>(null);
   const dataRef = useRef<AppData | null>(null);
+  const persistedDataRef = useRef<AppData | null>(null);
+  const persistedRevisionRef = useRef<number | null>(null);
+  const dirtyRef = useRef(false);
+  const savingRef = useRef(false);
+  const saveLoopRef = useRef<Promise<void> | null>(null);
+  const pendingConflictRef = useRef<PendingSyncConflict | null>(null);
   const [user, setUser] = useState<AppData['users'][number] | null>(() => {
     if (usesLocalSqlite) return null;
     try { return JSON.parse(localStorage.getItem('juniper-pos.user') || 'null'); } catch { return null; }
@@ -65,14 +86,27 @@ function App() {
   const [serviceLoading, setServiceLoading] = useState(usesLocalSqlite);
   const [serviceError, setServiceError] = useState('');
   const [persistenceError, setPersistenceError] = useState('');
-  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const [isSaving, setIsSaving] = useState(false);
+  const [syncConflict, setSyncConflict] = useState<{ paths: string[]; ticketNumberCollision: boolean } | null>(null);
+  const [remoteUpdateAvailable, setRemoteUpdateAvailable] = useState(false);
   const lastSaveError = useRef<Error | null>(null);
   const [, setLocation] = useLocation();
 
+  const loadSnapshot = async () => {
+    if (localSqliteRepository) return localSqliteRepository.loadSnapshot();
+    return { data: await repository.load(), revision: null };
+  };
+  const acceptSnapshot = (snapshot: { data: AppData; revision: number | null }) => {
+    dataRef.current = snapshot.data;
+    persistedDataRef.current = snapshot.data;
+    persistedRevisionRef.current = snapshot.revision;
+    dirtyRef.current = false;
+    setDataState(snapshot.data);
+    setRemoteUpdateAvailable(false);
+  };
   const loadSignedInData = async (signedInUser: AppData['users'][number]) => {
-    const loaded = await appRepository.load();
-    dataRef.current = loaded;
-    setDataState(loaded);
+    const loaded = await loadSnapshot();
+    acceptSnapshot(loaded);
     setUser(signedInUser);
     setServiceError('');
     setLocation(signedInUser.role === 'Manager' ? '/dashboard' : '/pos');
@@ -87,17 +121,20 @@ function App() {
       if (!info.needsImport && !info.needsManagerSetup) {
         const existingUser = await localService.session();
         if (existingUser) {
-          const loaded = await appRepository.load();
-          dataRef.current = loaded;
-          setDataState(loaded);
+          const loaded = await loadSnapshot();
+          acceptSnapshot(loaded);
           setUser(existingUser);
         } else {
           dataRef.current = null;
+          persistedDataRef.current = null;
+          persistedRevisionRef.current = null;
           setDataState(null);
           setUser(null);
         }
       } else {
         dataRef.current = null;
+        persistedDataRef.current = null;
+        persistedRevisionRef.current = null;
         setDataState(null);
         setUser(null);
       }
@@ -116,45 +153,235 @@ function App() {
     if (usesLocalSqlite) {
       void connectLocalService();
     } else {
-      appRepository.load().then(loaded => {
-        dataRef.current = loaded;
-        setDataState(loaded);
-      }).catch(error => {
+      loadSnapshot().then(acceptSnapshot).catch(error => {
         setServiceError(error instanceof Error ? error.message : 'Could not load register data.');
       });
     }
   }, []);
 
-  const enqueueSave = (snapshot: AppData) => {
-    saveQueue.current = saveQueue.current.then(async () => {
-      await appRepository.save(snapshot);
-      lastSaveError.current = null;
-      setPersistenceError('');
-    }).catch(error => {
-      const cause = error instanceof Error ? error : new Error('Unknown storage error.');
-      lastSaveError.current = cause;
-      setPersistenceError(cause.message);
-    });
+  const startSaveLoop = (): Promise<void> => {
+    if (saveLoopRef.current) return saveLoopRef.current;
+    if (!dirtyRef.current || pendingConflictRef.current) return Promise.resolve();
+
+    const loop = (async () => {
+      savingRef.current = true;
+      setIsSaving(true);
+      try {
+        let automaticRebases = 0;
+        while (dirtyRef.current && !pendingConflictRef.current) {
+          dirtyRef.current = false;
+          const snapshot = dataRef.current;
+          const baseAtStart = persistedDataRef.current;
+          if (!snapshot) break;
+          try {
+            if (localSqliteRepository) {
+              const revision = persistedRevisionRef.current;
+              if (revision === null) throw new Error('The local register has no loaded revision. Reload before saving.');
+              const savedRevision = await localSqliteRepository.save(snapshot, revision);
+              persistedRevisionRef.current = savedRevision;
+            } else {
+              await appRepository.save(snapshot);
+            }
+            persistedDataRef.current = snapshot;
+            lastSaveError.current = null;
+            setPersistenceError('');
+            setRemoteUpdateAvailable(false);
+            if (!dirtyRef.current && dataRef.current === snapshot) setToastText('Register changes saved.');
+          } catch (error) {
+            if (localSqliteRepository && error instanceof LocalServiceConflictError) {
+              try {
+                const latest = await localSqliteRepository.loadSnapshot();
+                const desired = dataRef.current || snapshot;
+                const base = persistedDataRef.current || baseAtStart || latest.data;
+                const merged = mergeAppDataSnapshots(base, desired, latest.data);
+                const ticketNumberCollision = merged.conflicts.some(path => path.startsWith('orders.orderNumber'));
+
+                persistedDataRef.current = latest.data;
+                persistedRevisionRef.current = latest.revision;
+                dataRef.current = merged.data;
+                setDataState(merged.data);
+                setRemoteUpdateAvailable(false);
+
+                if (merged.conflicts.length || automaticRebases >= 2) {
+                  const paths = merged.conflicts.length ? merged.conflicts : ['Repeated concurrent updates'];
+                  pendingConflictRef.current = {
+                    base,
+                    local: desired,
+                    remote: latest.data,
+                    revision: latest.revision,
+                    paths,
+                  };
+                  dirtyRef.current = false;
+                  const message = ticketNumberCollision
+                    ? 'Another checkout used the same ticket number. Your checkout was not resubmitted; review the latest orders before retrying it.'
+                    : 'Another register changed overlapping data. Latest saved data is loaded, and this tab’s unsaved changes are held for review.';
+                  const cause = new Error(message);
+                  lastSaveError.current = cause;
+                  setPersistenceError(cause.message);
+                  setSyncConflict({ paths, ticketNumberCollision });
+                  break;
+                }
+
+                automaticRebases += 1;
+                dirtyRef.current = true;
+                setPersistenceError('');
+                lastSaveError.current = null;
+                continue;
+              } catch (refreshError) {
+                const cause = refreshError instanceof Error ? refreshError : new Error('The register changed, but the latest data could not be loaded.');
+                dirtyRef.current = true;
+                lastSaveError.current = cause;
+                setPersistenceError(cause.message);
+                break;
+              }
+            }
+
+            const cause = error instanceof Error ? error : new Error('Unknown storage error.');
+            dirtyRef.current = true;
+            lastSaveError.current = cause;
+            setPersistenceError(cause.message);
+            break;
+          }
+        }
+      } finally {
+        savingRef.current = false;
+        setIsSaving(false);
+      }
+    })();
+    saveLoopRef.current = loop;
+    void loop.finally(() => {
+      if (saveLoopRef.current === loop) saveLoopRef.current = null;
+      if (dirtyRef.current && !pendingConflictRef.current && !lastSaveError.current) void startSaveLoop();
+    }).catch(() => {});
+    return loop;
   };
+
   const setData = (updater: (current: AppData) => AppData) => {
+    if (pendingConflictRef.current) {
+      toast('Review the register update conflict before making more changes.');
+      return;
+    }
     const current = dataRef.current;
     if (!current) return;
     const next = updater(current);
     dataRef.current = next;
     setDataState(next);
-    enqueueSave(next);
+    dirtyRef.current = true;
+    if (!lastSaveError.current) void startSaveLoop();
   };
   const flushSave = async () => {
-    await saveQueue.current;
+    if (dirtyRef.current && !lastSaveError.current && !pendingConflictRef.current) void startSaveLoop();
+    while (saveLoopRef.current) await saveLoopRef.current;
+    if (pendingConflictRef.current) throw new Error('Resolve the register update conflict before signing out.');
     if (lastSaveError.current) throw lastSaveError.current;
   };
   const retrySave = () => {
-    const current = dataRef.current;
-    if (!current) return;
+    if (pendingConflictRef.current) return;
+    if (!dataRef.current) return;
     lastSaveError.current = null;
-    enqueueSave(current);
+    setPersistenceError('');
+    dirtyRef.current = true;
+    void startSaveLoop();
   };
-  const toast = (message: string) => { setToastText(message); window.setTimeout(() => setToastText(''), 2600); };
+  const resolveSyncConflict = (action: 'apply' | 'discard') => {
+    const pending = pendingConflictRef.current;
+    if (!pending) return;
+    if (action === 'discard') {
+      acceptSnapshot({ data: pending.remote, revision: pending.revision });
+      pendingConflictRef.current = null;
+      lastSaveError.current = null;
+      setSyncConflict(null);
+      setPersistenceError('');
+      toast('Loaded the latest saved register data. Unsaved changes from this tab were discarded.');
+      return;
+    }
+    if (syncConflict?.ticketNumberCollision) {
+      toast('Review the latest order book and start the unsaved checkout again to get a new ticket number.');
+      return;
+    }
+    const details = pending.paths.slice(0, 6).join('\n• ');
+    if (!window.confirm(`These saved fields changed in another register:\n\n• ${details}\n\nApplying this tab’s values will replace the newer values in those fields. Review them before continuing. Apply and retry?`)) return;
+    const merged = mergeAppDataSnapshots(pending.base, pending.local, pending.remote, { preferLocal: true });
+    if (merged.conflicts.some(path => path.startsWith('orders.orderNumber'))) {
+      toast('This checkout conflicts with a ticket number assigned in another register. Start it again from the refreshed order book.');
+      return;
+    }
+    pendingConflictRef.current = null;
+    setSyncConflict(null);
+    lastSaveError.current = null;
+    setPersistenceError('');
+    persistedDataRef.current = pending.remote;
+    persistedRevisionRef.current = pending.revision;
+    dataRef.current = merged.data;
+    setDataState(merged.data);
+    dirtyRef.current = true;
+    void startSaveLoop();
+  };
+  const refreshLatest = async () => {
+    if (!localSqliteRepository || dirtyRef.current || savingRef.current || pendingConflictRef.current) {
+      setRemoteUpdateAvailable(true);
+      return;
+    }
+    try {
+      const latest = await localSqliteRepository.loadSnapshot();
+      if (dirtyRef.current || savingRef.current || pendingConflictRef.current) {
+        setRemoteUpdateAvailable(true);
+        return;
+      }
+      acceptSnapshot(latest);
+      setPersistenceError('');
+      lastSaveError.current = null;
+    } catch (error) {
+      const cause = error instanceof Error ? error : new Error('Could not refresh the local register data.');
+      setPersistenceError(cause.message);
+    }
+  };
+
+  useEffect(() => {
+    if (!localSqliteRepository || !user || !data) return;
+    let active = true;
+    const checkForRemoteUpdates = async () => {
+      try {
+        const remoteRevision = await localSqliteRepository.currentRevision();
+        if (!active || persistedRevisionRef.current === null || remoteRevision <= persistedRevisionRef.current) return;
+        if (dirtyRef.current || savingRef.current || pendingConflictRef.current) {
+          setRemoteUpdateAvailable(true);
+          return;
+        }
+        const latest = await localSqliteRepository.loadSnapshot();
+        if (!active) return;
+    if (dirtyRef.current || savingRef.current || pendingConflictRef.current) {
+          setRemoteUpdateAvailable(true);
+          return;
+        }
+        acceptSnapshot(latest);
+      } catch {
+        // A later focus or poll retries; save failures are reported by the write path.
+      }
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void checkForRemoteUpdates();
+    };
+    window.addEventListener('focus', checkForRemoteUpdates);
+    document.addEventListener('visibilitychange', handleVisibility);
+    const interval = window.setInterval(checkForRemoteUpdates, 4000);
+    void checkForRemoteUpdates();
+    return () => {
+      active = false;
+      window.removeEventListener('focus', checkForRemoteUpdates);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.clearInterval(interval);
+    };
+  }, [user, Boolean(data), isSaving]);
+
+  const toast = (message: string) => {
+    const reportsSuccess = /\b(saved|added|updated|removed|deleted|created|paused|available|started|closed|recorded|cancelled|marked)\b/i.test(message);
+    const visibleMessage = reportsSuccess && (dirtyRef.current || savingRef.current)
+      ? 'Saving register changes…'
+      : message;
+    setToastText(visibleMessage);
+    window.setTimeout(() => setToastText(''), 2600);
+  };
   if (usesLocalSqlite) {
     if (serviceLoading) {
       return <div className="login-screen"><div className="login-art"><div className="login-brand"><div className="brand-mark">J</div><div><div className="brand-name">Juniper &amp; Hearth</div><div className="brand-sub">Local service desk</div></div></div><div className="login-hero"><h1>Opening the local register.</h1><p>Checking the SQLite service on this computer.</p></div><span className="login-food-note">Your register data stays on this computer.</span></div><div className="login-form-side"><div className="panel" style={{ padding: 24, width: 320 }}><div className="stat-label">LOCAL DATABASE</div><div className="stat-value">Connecting…</div></div></div></div>;
@@ -184,10 +411,42 @@ function App() {
     if (!data) return <LocalServiceStatus message="The local account is signed in, but POS data could not be loaded." onRetry={() => { void connectLocalService(); }} />;
   }
   if (!data) return <div className="login-screen"><div className="login-art"><div className="login-brand"><div className="brand-mark">J</div><div><div className="brand-name">Juniper & Hearth</div><div className="brand-sub">Local service desk</div></div></div><div className="login-hero"><h1>Service, in good hands.</h1><p>Starting your local register and preparing today's menu.</p></div><span className="login-food-note">A neighborhood table since 2019</span></div><div className="login-form-side"><div className="panel" style={{ padding: 24, width: 320 }}><div className="stat-label">OPENING REGISTER</div><div className="stat-value">Ready shortly</div><div style={{ height: 8, borderRadius: 20, background: 'hsl(var(--secondary))' }} /></div></div></div>;
-  return <StoreContext.Provider value={{ data, setData, flushSave, retrySave, persistenceError, user, setUser, draftTableId, setDraftTableId, recoveryDetected, setRecoveryDetected, toast }}>
+  return <StoreContext.Provider value={{
+    data,
+    setData,
+    flushSave,
+    retrySave,
+    isSaving,
+    persistenceError,
+    syncConflict,
+    resolveSyncConflict,
+    remoteUpdateAvailable,
+    refreshLatest,
+    user,
+    setUser,
+    draftTableId,
+    setDraftTableId,
+    recoveryDetected,
+    setRecoveryDetected,
+    toast,
+  }}>
       <Switch><Route path="/login" component={LoginPage} /><Route><ProtectedShell><Switch><Route path="/" component={DashboardPage} /><Route path="/dashboard" component={DashboardPage} /><Route path="/pos" component={PosPage} /><Route path="/tables" component={TablesPage} /><Route path="/menu" component={MenuPage} /><Route path="/deals" component={DealsPage} /><Route path="/business-day" component={BusinessDayPage} /><Route path="/orders" component={OrdersPage} /><Route path="/payments" component={PaymentsPage} /><Route path="/expenses" component={ExpensesPage} /><Route path="/reports" component={ReportsPage} /><Route path="/staff" component={StaffPage} /><Route path="/settings" component={SettingsPage} /><Route component={NotFoundPage} /></Switch></ProtectedShell></Route></Switch>
     {toastText && <div className="notice" role="status" data-testid="status-notice">{toastText}</div>}
-    {persistenceError && <div className="persistence-failure" role="alert"><span><b>POS data was not saved.</b> {persistenceError}</span><button className="btn btn-sm" onClick={retrySave}>Retry save</button></div>}
+    {remoteUpdateAvailable && !syncConflict && <div className="persistence-failure" role="status">
+      <span><b>New register data is available.</b> Another tab or browser has saved updates.</span>
+      <button className="btn btn-sm" onClick={() => void refreshLatest()} disabled={isSaving}>Refresh data</button>
+    </div>}
+    {persistenceError && <div className="persistence-failure" role="alert">
+      <span><b>{syncConflict ? 'Register changes need review.' : 'POS data was not saved.'}</b> {persistenceError}
+        {syncConflict && <><br />Conflicting fields: {syncConflict.paths.slice(0, 5).join(', ')}{syncConflict.paths.length > 5 ? ', …' : ''}</>}
+      </span>
+      {syncConflict
+        ? <div className="persistence-actions">
+            {!syncConflict.ticketNumberCollision && <button className="btn btn-sm" onClick={() => resolveSyncConflict('apply')}>Review and apply my changes</button>}
+            <button className="btn btn-sm" onClick={() => resolveSyncConflict('discard')}>Use latest saved data</button>
+          </div>
+        : <button className="btn btn-sm" onClick={retrySave} disabled={isSaving}>Retry save</button>}
+    </div>}
   </StoreContext.Provider>;
 }
 
@@ -1457,7 +1716,7 @@ function QuantityField({ value, onCommit, label, testId }: { value: number; onCo
   return <input className="input qty-entry" type="text" inputMode="numeric" aria-label={`${label} quantity`} value={draft} onChange={event => setDraft(event.target.value)} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); commit(); (event.currentTarget as HTMLInputElement).blur(); } }} data-testid={testId} />;
 }
 function PosPage() {
-  const { data, setData, user, draftTableId, setDraftTableId, recoveryDetected, toast } = useStore();
+  const { data, setData, user, draftTableId, setDraftTableId, recoveryDetected, toast, isSaving, persistenceError, syncConflict } = useStore();
   const [type, setType] = useState<OrderType>('Dine-in');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
@@ -1475,15 +1734,18 @@ function PosPage() {
   const [reference, setReference] = useState('');
   const [completed, setCompleted] = useState<Order | null>(null);
   const autoPrintedOrders = useRef(new Set<string>());
+  const completedPersisted = Boolean(completed
+    && data.orders.some(order => order.id === completed.id)
+    && data.payments.some(payment => payment.orderId === completed.id));
   useEffect(() => {
-    if (!completed || autoPrintedOrders.current.has(completed.id)) return;
+    if (!completed || !completedPersisted || isSaving || persistenceError || syncConflict || autoPrintedOrders.current.has(completed.id)) return;
     autoPrintedOrders.current.add(completed.id);
     try {
       printCompletedOrder();
     } catch {
       toast('The browser could not open printing automatically. Use Print bill + kitchen token below.');
     }
-  }, [completed, toast]);
+  }, [completed, completedPersisted, isSaving, persistenceError, syncConflict, toast]);
   const openDay = activeBusinessDay(data.businessDays);
   const occupied = useMemo(() => occupiedTableIds(data.orders, openDay), [data.orders, openDay]);
   const availableTables = useMemo(() => data.tables.filter(table => !occupied.has(table.id)), [data.tables, occupied]);
@@ -1599,7 +1861,24 @@ function PosPage() {
         <div className="dialog-actions" style={{ padding: '22px 0 0' }}><button className="btn" onClick={() => setCheckout(false)}>Go back</button><button className="btn btn-primary" onClick={complete} data-testid="button-complete-payment"><Check size={14} /> Complete sale</button></div>
       </Dialog>
     )}
-    {completed && <Dialog title="Payment recorded" onClose={resetOrder} wide><div className="status-banner" style={{ marginBottom: 12 }}><Check size={16} /> Order {completed.orderNumber} is paid and saved on this device.</div><p className="page-subtitle print-workflow-hint">The app asks your browser to print the customer bill and separate kitchen token. If browser restrictions prevent the dialog from opening, choose Print bill + kitchen token below. Printing requires browser confirmation; silent printing is not supported.</p><div className={`order-print-pack ${data.settings.printWidth || 'narrow'}`} data-testid={`order-print-pack-${completed.id}`}><Receipt order={completed} data={data} /><div className="kitchen-token-container" dangerouslySetInnerHTML={{ __html: buildKitchenTokenMarkup(completed, data.settings) }} /></div><div className="dialog-actions" style={{ paddingBottom: 0 }}><button className="btn" onClick={() => printReceipt()} data-testid="button-print-receipt"><Printer size={14} /> Print receipt</button><button className="btn btn-primary" onClick={() => printCompletedOrder()} data-testid="button-print-order-bundle"><Printer size={14} /> Print bill + kitchen token</button><button className="btn" onClick={resetOrder} data-testid="button-new-ticket">Start next order <ChevronRight size={14} /></button></div></Dialog>}
+    {completed && <Dialog title="Payment recorded" onClose={resetOrder} wide>
+      <div className={`status-banner ${completedPersisted && !isSaving && !persistenceError ? '' : 'status-banner-warning'}`} style={{ marginBottom: 12 }} role={persistenceError ? 'alert' : 'status'}>
+        {persistenceError || syncConflict
+          ? <><AlertCircle size={16} /> Order {completed.orderNumber} is not confirmed as saved. Do not submit it again until you review the register update message.</>
+          : isSaving
+            ? <><Clock3 size={16} /> Saving order {completed.orderNumber} and its payment to SQLite…</>
+            : completedPersisted
+              ? <><Check size={16} /> Order {completed.orderNumber} and its payment are saved on this device.</>
+              : <><AlertCircle size={16} /> This order is not in the latest saved register data.</>}
+      </div>
+      <p className="page-subtitle print-workflow-hint">The app asks your browser to print the customer bill and separate kitchen token. If browser restrictions prevent the dialog from opening, choose Print bill + kitchen token below. Printing requires browser confirmation; silent printing is not supported.</p>
+      <div className={`order-print-pack ${data.settings.printWidth || 'narrow'}`} data-testid={`order-print-pack-${completed.id}`}><Receipt order={completed} data={data} /><div className="kitchen-token-container" dangerouslySetInnerHTML={{ __html: buildKitchenTokenMarkup(completed, data.settings) }} /></div>
+      <div className="dialog-actions" style={{ paddingBottom: 0 }}>
+        <button className="btn" onClick={() => printReceipt()} disabled={!completedPersisted || isSaving || Boolean(persistenceError)} data-testid="button-print-receipt"><Printer size={14} /> Print receipt</button>
+        <button className="btn btn-primary" onClick={() => printCompletedOrder()} disabled={!completedPersisted || isSaving || Boolean(persistenceError)} data-testid="button-print-order-bundle"><Printer size={14} /> Print bill + kitchen token</button>
+        <button className="btn" onClick={resetOrder} disabled={isSaving || Boolean(syncConflict) || Boolean(persistenceError) || !completedPersisted} data-testid="button-new-ticket">Start next order <ChevronRight size={14} /></button>
+      </div>
+    </Dialog>}
   </div>;
 }
 

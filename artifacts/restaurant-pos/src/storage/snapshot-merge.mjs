@@ -94,8 +94,21 @@ export function mergeAppDataSnapshots(base, local, remote, { preferLocal = false
   const orderNumbers = new Map();
   for (const order of result.orders || []) {
     const previous = orderNumbers.get(order.orderNumber);
-    if (previous && previous !== order.id) conflicts.push(`orders.orderNumber (${order.orderNumber})`);
-    else orderNumbers.set(order.orderNumber, order.id);
+    if (previous && previous !== order.id) {
+      conflicts.push(`orders.orderNumber (${order.orderNumber})`);
+      if (!preferLocal) {
+        const localNewOrder = (local.orders || []).find(candidate =>
+          candidate.orderNumber === order.orderNumber
+          && !(base.orders || []).some(existing => existing.id === candidate.id),
+        );
+        if (localNewOrder) {
+          result.orders = result.orders.filter(candidate => candidate.id !== localNewOrder.id);
+          result.payments = result.payments.filter(payment => payment.orderId !== localNewOrder.id);
+        }
+      }
+    } else {
+      orderNumbers.set(order.orderNumber, order.id);
+    }
   }
 
   return { data: result, conflicts: [...new Set(conflicts)] };

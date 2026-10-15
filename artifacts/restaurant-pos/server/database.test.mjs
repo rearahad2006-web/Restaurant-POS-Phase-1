@@ -11,6 +11,7 @@ import {
   authenticateUser,
   closeRestaurantDatabase,
   createManagerAccount,
+  getDataRevision,
   getBootstrapInfo,
   importLegacyBackup,
   loadAppData,
@@ -183,6 +184,12 @@ async function requestRestore(base, cookie, backup, confirmed = true) {
   });
 }
 
+function revisionHeader(response) {
+  const revision = Number(response.headers.get('X-POS-Revision'));
+  assert.ok(Number.isSafeInteger(revision) && revision >= 0, 'the API should return a valid revision header');
+  return revision;
+}
+
 test('SQLite round-trips staff, register records and historical snapshots atomically', async t => {
   const directory = await temporaryDirectory(t, 'restaurant-pos-db-');
   const db = openRestaurantDatabase(path.join(directory, 'register.sqlite'));
@@ -221,6 +228,25 @@ test('SQLite round-trips staff, register records and historical snapshots atomic
   assert.deepEqual(loadAppData(db), loaded);
   assert.equal(loadAppData(db).settings.name, source.settings.name);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM business_days WHERE id = 'fail-day'").get().count, 0);
+});
+
+test('existing SQLite files without a sync revision are upgraded without changing register data', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-sync-revision-migration-');
+  const databasePath = path.join(directory, 'register.sqlite');
+  const original = makeFixture();
+  const firstOpen = openRestaurantDatabase(databasePath);
+  saveAppData(firstOpen, original);
+  closeRestaurantDatabase(firstOpen);
+
+  const migrationDb = new Database(databasePath);
+  migrationDb.prepare("DELETE FROM app_meta WHERE key = 'data_revision'").run();
+  migrationDb.close();
+
+  const reopened = openRestaurantDatabase(databasePath);
+  t.after(() => closeRestaurantDatabase(reopened));
+  assert.equal(getDataRevision(reopened), 0);
+  assert.equal(loadAppData(reopened).orders[0].id, original.orders[0].id);
+  assert.equal(loadAppData(reopened).expenses[0].id, original.expenses[0].id);
 });
 
 test('legacy import verifies its source copy and is idempotent', async t => {
@@ -362,7 +388,14 @@ test('manager restore replaces the live database from a verified backup and pres
   const directory = await temporaryDirectory(t, 'restaurant-pos-restore-success-');
   const { service, base, cookie, dataDir } = await startServiceWithManager(t, directory);
   const expected = loadAppData(service.db);
+  const sourceRevision = getDataRevision(service.db);
   const sourceBackup = await requestBackup(base, cookie);
+  const sourceBackupDb = new Database(path.join(service.backupDir, sourceBackup.filename), { readonly: true, fileMustExist: true });
+  try {
+    assert.equal(getDataRevision(sourceBackupDb), sourceRevision, 'backup files should retain their source revision');
+  } finally {
+    sourceBackupDb.close();
+  }
   assert.deepEqual(
     (await readdir(service.backupDir)).filter(name => /(?:-wal|-shm|-journal)$/.test(name)),
     [],
@@ -379,6 +412,7 @@ test('manager restore replaces the live database from a verified backup and pres
   current.payments[0].amount = 301;
   saveAppData(service.db, current);
   const currentSaved = loadAppData(service.db);
+  const currentRevision = getDataRevision(service.db);
   assert.notDeepEqual(currentSaved, expected);
   assert.ok((await stat(path.join(dataDir, 'restaurant-pos.sqlite-wal'))).size > 0, 'the open database should contain WAL data');
 
@@ -387,11 +421,14 @@ test('manager restore replaces the live database from a verified backup and pres
   assert.equal(unconfirmed.status, 400, JSON.stringify(unconfirmedBody));
   assert.match(unconfirmedBody.error, /Confirm that you want to replace/);
   assert.deepEqual(loadAppData(service.db), currentSaved);
+  assert.equal(getDataRevision(service.db), currentRevision, 'an unconfirmed restore must not change the revision');
 
   const response = await requestRestore(base, cookie, sourceBackup);
   const result = await response.json();
   assert.equal(response.status, 200, JSON.stringify(result));
   assert.equal(result.restored, true);
+  assert.ok(result.revision > currentRevision, 'restore must advance beyond the live revision even when the backup is older');
+  assert.equal(getDataRevision(service.db), result.revision);
   assert.deepEqual(result.backup, { filename: sourceBackup.filename, sha256: sourceBackup.sha256 });
   assert.deepEqual(loadAppData(service.db), expected);
   assert.equal(loadAppData(service.db).orders[0].subtotal, 350);
@@ -405,6 +442,7 @@ test('manager restore replaces the live database from a verified backup and pres
   try {
     assert.equal(reopenedDb.pragma('integrity_check', { simple: true }), 'ok');
     assert.deepEqual(loadAppData(reopenedDb), expected, 'a new SQLite connection should see the restored records');
+    assert.equal(getDataRevision(reopenedDb), result.revision);
   } finally {
     reopenedDb.close();
   }
@@ -416,6 +454,7 @@ test('manager restore replaces the live database from a verified backup and pres
   try {
     assert.equal(safetyDb.pragma('integrity_check', { simple: true }), 'ok');
     assert.deepEqual(loadAppData(safetyDb), currentSaved);
+    assert.equal(getDataRevision(safetyDb), currentRevision, 'the automatic safety backup should retain the live pre-restore revision');
   } finally {
     safetyDb.close();
   }
@@ -429,6 +468,7 @@ test('corrupt and incompatible backups are rejected before live data or safety b
   const directory = await temporaryDirectory(t, 'restaurant-pos-restore-invalid-');
   const { service, base, cookie } = await startServiceWithManager(t, directory);
   const original = loadAppData(service.db);
+  const originalRevision = getDataRevision(service.db);
   const sourceBackup = await requestBackup(base, cookie);
 
   const corruptName = 'restaurant-pos-2026-10-13T08-00-00-000Z-deadbeef.sqlite';
@@ -453,6 +493,7 @@ test('corrupt and incompatible backups are rejected before live data or safety b
     assert.equal(response.status, 400, JSON.stringify(body));
     assert.match(body.error, /could not be verified/);
     assert.deepEqual(loadAppData(service.db), original);
+    assert.equal(getDataRevision(service.db), originalRevision);
   }
 
   const listedResponse = await fetch(`${base}/api/backups`, { headers: { cookie } });
@@ -477,6 +518,7 @@ test('a failed restore rolls back all changes and retains the verified safety ba
   current.payments[0].amount = 321;
   saveAppData(service.db, current);
   const expectedCurrent = loadAppData(service.db);
+  const currentRevision = getDataRevision(service.db);
   const expectedCounts = databaseRecordCounts(service.db);
   service.db.exec(`
     CREATE TRIGGER fail_restore_insert
@@ -490,6 +532,7 @@ test('a failed restore rolls back all changes and retains the verified safety ba
   assert.match(body.error, /original data was preserved/);
   assert.deepEqual(loadAppData(service.db), expectedCurrent);
   assert.deepEqual(databaseRecordCounts(service.db), expectedCounts);
+  assert.equal(getDataRevision(service.db), currentRevision, 'a failed restore must not advance or roll back the revision');
 
   const backupsResponse = await fetch(`${base}/api/backups`, { headers: { cookie } });
   const backupsBody = await backupsResponse.json();
@@ -501,6 +544,7 @@ test('a failed restore rolls back all changes and retains the verified safety ba
   const safetyDb = new Database(path.join(service.backupDir, safetyBackup.filename), { readonly: true, fileMustExist: true });
   try {
     assert.deepEqual(loadAppData(safetyDb), expectedCurrent);
+    assert.equal(getDataRevision(safetyDb), currentRevision, 'the safety backup should retain its revision on failed restore');
   } finally {
     safetyDb.close();
   }
@@ -701,6 +745,7 @@ test('manager setup, manager and cashier sign-in, failed saves, and register dat
 
   const loaded = await requestJson(base, '/api/data', { cookie: managerCookie });
   assert.equal(loaded.response.status, 200);
+  const loadedRevision = revisionHeader(loaded.response);
   const data = loaded.body;
   data.settings.name = 'Restart Test Restaurant';
   data.settings.address = 'Temporary runtime-test address';
@@ -734,10 +779,18 @@ test('manager setup, manager and cashier sign-in, failed saves, and register dat
   data.orders.push(secondOrder);
   data.payments.push(secondPayment);
 
-  const saved = await requestJson(base, '/api/data', { method: 'PUT', cookie: managerCookie, body: data });
+  const saved = await requestJson(base, '/api/data', {
+    method: 'PUT',
+    cookie: managerCookie,
+    headers: { 'X-POS-Revision': String(loadedRevision) },
+    body: data,
+  });
   assert.equal(saved.response.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.body.revision, loadedRevision + 1);
+  assert.equal(revisionHeader(saved.response), saved.body.revision);
   const expected = await requestJson(base, '/api/data', { cookie: managerCookie });
   assert.equal(expected.response.status, 200);
+  const expectedRevision = revisionHeader(expected.response);
   assert.equal(expected.body.settings.name, 'Restart Test Restaurant');
   assert.ok(expected.body.orders.some(order => order.id === secondOrder.id));
   assert.ok(expected.body.payments.some(payment => payment.id === secondPayment.id));
@@ -754,12 +807,14 @@ test('manager setup, manager and cashier sign-in, failed saves, and register dat
   const failedSave = await requestJson(base, '/api/data', {
     method: 'PUT',
     cookie: managerCookie,
+    headers: { 'X-POS-Revision': String(expectedRevision) },
     body: rejectedData,
   });
   assert.equal(failedSave.response.status, 500);
   assert.match(failedSave.body.error, /simulated runtime save failure/);
   const afterFailedSave = await requestJson(base, '/api/data', { cookie: managerCookie });
   assert.deepEqual(afterFailedSave.body, expected.body, 'a failed request must not overwrite the last saved register state');
+  assert.equal(revisionHeader(afterFailedSave.response), expectedRevision, 'a rolled-back save must not advance the revision');
   service.db.exec('DROP TRIGGER reject_runtime_settings_update');
 
   const cashierLogin = await requestJson(base, '/api/login', {
@@ -799,6 +854,7 @@ test('manager setup, manager and cashier sign-in, failed saves, and register dat
   const reloaded = await requestJson(base, '/api/data', { cookie: restartedManagerCookie });
   assert.equal(reloaded.response.status, 200);
   assert.deepEqual(reloaded.body, expected.body, 'settings, orders, payments, and historical records should persist across restart');
+  assert.equal(revisionHeader(reloaded.response), expectedRevision, 'data revision should persist across restart');
 
   const restartedCashierLogin = await requestJson(base, '/api/login', {
     method: 'POST',
@@ -806,4 +862,187 @@ test('manager setup, manager and cashier sign-in, failed saves, and register dat
   });
   assert.equal(restartedCashierLogin.response.status, 200, JSON.stringify(restartedCashierLogin.body));
   assert.equal(restartedCashierLogin.body.user.role, 'Cashier');
+});
+
+test('stale full snapshots are rejected atomically and a fresh client saves at the new revision', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-stale-snapshot-');
+  const { service, base, cookie: managerCookie } = await startServiceWithManager(t, directory);
+  const secondLogin = await requestJson(base, '/api/login', {
+    method: 'POST',
+    body: { username: 'manager', password: 'temporary-test-pin' },
+  });
+  assert.equal(secondLogin.response.status, 200);
+  const secondManagerCookie = sessionCookie(secondLogin.response);
+
+  const clientA = await requestJson(base, '/api/data', { cookie: managerCookie });
+  const clientB = await requestJson(base, '/api/data', { cookie: secondManagerCookie });
+  const startingRevision = revisionHeader(clientA.response);
+  assert.equal(revisionHeader(clientB.response), startingRevision, 'both sessions start at the same revision');
+
+  const missingRevision = await requestJson(base, '/api/data', {
+    method: 'PUT',
+    cookie: managerCookie,
+    body: clientA.body,
+  });
+  assert.equal(missingRevision.response.status, 428);
+  const afterMissingRevision = await requestJson(base, '/api/data', { cookie: managerCookie });
+  assert.equal(revisionHeader(afterMissingRevision.response), startingRevision);
+  assert.deepEqual(afterMissingRevision.body, clientA.body, 'a request without a revision must not change register data');
+
+  const fromA = structuredClone(clientA.body);
+  fromA.orders[0].status = 'cancelled';
+  fromA.orders[0].updatedAt = '2026-10-14T11:00:00.000Z';
+  fromA.payments[0].status = 'cancelled';
+  fromA.orders[0].payment.status = 'cancelled';
+  fromA.expenses.push({
+    ...fromA.expenses[0],
+    id: 'expense-client-a',
+    purpose: 'Saved by client A',
+    createdAt: '2026-10-14T11:01:00.000Z',
+    updatedAt: '2026-10-14T11:01:00.000Z',
+  });
+  const newOrder = structuredClone(fromA.orders[0]);
+  newOrder.id = 'order-client-a';
+  newOrder.orderNumber = 'JH-0002';
+  newOrder.createdAt = '2026-10-14T11:02:00.000Z';
+  newOrder.updatedAt = newOrder.createdAt;
+  newOrder.status = 'paid';
+  newOrder.subtotal = 125;
+  newOrder.discount = 0;
+  newOrder.total = 125;
+  newOrder.items = [{ ...newOrder.items[0], unitPrice: 125, quantity: 1, lineTotal: 125 }];
+  newOrder.deals = [];
+  const newPayment = {
+    ...fromA.payments[0],
+    id: 'payment-client-a',
+    orderId: newOrder.id,
+    dateTime: newOrder.createdAt,
+    createdAt: newOrder.createdAt,
+    amount: 125,
+    status: 'paid',
+  };
+  newOrder.payment = newPayment;
+  fromA.orders.push(newOrder);
+  fromA.payments.push(newPayment);
+
+  const savedByA = await requestJson(base, '/api/data', {
+    method: 'PUT',
+    cookie: managerCookie,
+    headers: { 'X-POS-Revision': String(startingRevision) },
+    body: fromA,
+  });
+  assert.equal(savedByA.response.status, 200, JSON.stringify(savedByA.body));
+  assert.equal(savedByA.body.revision, startingRevision + 1);
+
+  const staleFromB = structuredClone(clientB.body);
+  staleFromB.orders[0].status = 'paid';
+  staleFromB.orders[0].total = 999;
+  staleFromB.orders[0].payment.status = 'paid';
+  staleFromB.orders[0].payment.amount = 999;
+  staleFromB.payments[0].status = 'paid';
+  staleFromB.payments[0].amount = 999;
+  staleFromB.expenses[0].total = 999;
+  const duplicateAttempt = structuredClone(newOrder);
+  duplicateAttempt.id = 'order-client-b';
+  duplicateAttempt.payment = { ...newPayment, id: 'payment-client-b', orderId: duplicateAttempt.id };
+  staleFromB.orders.push(duplicateAttempt);
+  staleFromB.payments.push(duplicateAttempt.payment);
+
+  const rejectedByRevision = await requestJson(base, '/api/data', {
+    method: 'PUT',
+    cookie: secondManagerCookie,
+    headers: { 'X-POS-Revision': String(startingRevision) },
+    body: staleFromB,
+  });
+  assert.equal(rejectedByRevision.response.status, 409);
+  assert.equal(rejectedByRevision.body.code, 'DATA_REVISION_CONFLICT');
+  assert.equal(rejectedByRevision.body.revision, startingRevision + 1);
+
+  const afterConflict = await requestJson(base, '/api/data', { cookie: secondManagerCookie });
+  assert.equal(revisionHeader(afterConflict.response), startingRevision + 1);
+  assert.deepEqual(afterConflict.body, fromA, 'a stale request must not apply any fields or records');
+  const revisionEndpoint = await requestJson(base, '/api/revision', { cookie: secondManagerCookie });
+  assert.equal(revisionEndpoint.response.status, 200);
+  assert.equal(revisionEndpoint.body.revision, startingRevision + 1);
+  assert.equal(afterConflict.body.orders.length, clientA.body.orders.length + 1, 'the rejected second checkout must not duplicate an order');
+  assert.equal(afterConflict.body.payments.length, clientA.body.payments.length + 1, 'the rejected second checkout must not duplicate a payment');
+  assert.ok(afterConflict.body.expenses.some(expense => expense.id === 'expense-client-a'), 'a stale expense snapshot must not delete a newer expense');
+
+  const fresh = structuredClone(afterConflict.body);
+  fresh.expenses.push({
+    ...fresh.expenses[0],
+    id: 'expense-fresh-client',
+    purpose: 'Saved by the fresh client',
+  });
+  const freshSave = await requestJson(base, '/api/data', {
+    method: 'PUT',
+    cookie: secondManagerCookie,
+    headers: { 'X-POS-Revision': String(revisionHeader(afterConflict.response)) },
+    body: fresh,
+  });
+  assert.equal(freshSave.response.status, 200, JSON.stringify(freshSave.body));
+  assert.equal(freshSave.body.revision, startingRevision + 2);
+  assert.ok(loadAppData(service.db).expenses.some(expense => expense.id === 'expense-fresh-client'));
+});
+
+test('Cashier data writes still allow orders while protecting Manager-only data', async t => {
+  const directory = await temporaryDirectory(t, 'restaurant-pos-cashier-revision-');
+  const { service, base, cookie: managerCookie } = await startServiceWithManager(t, directory);
+  const managerData = loadAppData(service.db);
+  managerData.users = managerData.users.map(user => user.id === 'cashier-1'
+    ? { ...user, password: 'temporary-cashier-pin' }
+    : user);
+  saveAppData(service.db, managerData);
+
+  const cashierLogin = await requestJson(base, '/api/login', {
+    method: 'POST',
+    body: { username: 'cashier', password: 'temporary-cashier-pin' },
+  });
+  assert.equal(cashierLogin.response.status, 200, JSON.stringify(cashierLogin.body));
+  const cashierCookie = sessionCookie(cashierLogin.response);
+  const loaded = await requestJson(base, '/api/data', { cookie: cashierCookie });
+  const revision = revisionHeader(loaded.response);
+  const cashierData = structuredClone(loaded.body);
+  const order = structuredClone(cashierData.orders[0]);
+  order.id = 'order-cashier-revision';
+  order.orderNumber = 'JH-0002';
+  order.createdAt = '2026-10-14T12:00:00.000Z';
+  order.updatedAt = order.createdAt;
+  order.subtotal = 125;
+  order.discount = 0;
+  order.total = 125;
+  order.items = [{ ...order.items[0], unitPrice: 125, quantity: 1, lineTotal: 125 }];
+  order.deals = [];
+  const payment = {
+    ...cashierData.payments[0],
+    id: 'payment-cashier-revision',
+    orderId: order.id,
+    dateTime: order.createdAt,
+    createdAt: order.createdAt,
+    amount: 125,
+  };
+  order.payment = payment;
+  cashierData.orders.push(order);
+  cashierData.payments.push(payment);
+
+  const allowedSave = await requestJson(base, '/api/data', {
+    method: 'PUT',
+    cookie: cashierCookie,
+    headers: { 'X-POS-Revision': String(revision) },
+    body: cashierData,
+  });
+  assert.equal(allowedSave.response.status, 200, JSON.stringify(allowedSave.body));
+
+  const restricted = structuredClone(cashierData);
+  restricted.expenses[0].total = 500;
+  const restrictedSave = await requestJson(base, '/api/data', {
+    method: 'PUT',
+    cookie: cashierCookie,
+    headers: { 'X-POS-Revision': String(allowedSave.body.revision) },
+    body: restricted,
+  });
+  assert.equal(restrictedSave.response.status, 403);
+  assert.match(restrictedSave.body.error, /Cashier accounts cannot change/);
+  assert.ok(loadAppData(service.db).orders.some(savedOrder => savedOrder.id === order.id));
+  assert.equal(loadAppData(service.db).expenses[0].total, 75);
 });

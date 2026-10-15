@@ -3,7 +3,7 @@ import { AppData, Payment, seededData } from '../domain';
 /** Replace this browser adapter with a SQLite adapter in the native Windows package. */
 export interface RestaurantRepository {
   load(): Promise<AppData>;
-  save(data: AppData): Promise<void>;
+  save(data: AppData, revision?: number): Promise<void | number>;
 }
 
 const STORAGE_KEY = 'juniper-pos.phase1.data.v1';
@@ -72,7 +72,7 @@ export class BrowserLocalRepository implements RestaurantRepository {
       return structuredClone(seededData);
     }
   }
-  async save(data: AppData): Promise<void> {
+  async save(data: AppData, _revision?: number): Promise<void> {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }
 }

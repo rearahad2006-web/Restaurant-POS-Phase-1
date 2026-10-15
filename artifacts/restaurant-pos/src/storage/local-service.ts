@@ -31,9 +31,25 @@ export interface LocalDatabaseRestoreResult {
   restored: true;
   backup: Pick<LocalDatabaseBackup, 'filename' | 'sha256'>;
   safetyBackup: LocalDatabaseBackup;
+  revision: number;
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+export interface LocalDataSnapshot {
+  data: AppData;
+  revision: number;
+}
+
+export class LocalServiceConflictError extends Error {
+  readonly currentRevision: number;
+
+  constructor(message: string, currentRevision: number) {
+    super(message);
+    this.name = 'LocalServiceConflictError';
+    this.currentRevision = currentRevision;
+  }
+}
+
+async function requestJsonResponse<T>(url: string, init?: RequestInit): Promise<{ body: T; response: Response }> {
   let response: Response;
   try {
     response = await fetch(url, {
@@ -55,21 +71,58 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     const message = body && typeof body === 'object' && 'error' in body ? String(body.error) : `Local service request failed (${response.status}).`;
+    if (response.status === 409 && body && typeof body === 'object' && 'code' in body && body.code === 'DATA_REVISION_CONFLICT') {
+      const revision = 'revision' in body ? Number(body.revision) : Number.NaN;
+      if (Number.isSafeInteger(revision) && revision >= 0) throw new LocalServiceConflictError(message, revision);
+    }
     throw new Error(message);
   }
-  return body as T;
+  return { body: body as T, response };
+}
+
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  return (await requestJsonResponse<T>(url, init)).body;
+}
+
+function responseRevision(response: Response): number {
+  const revision = Number(response.headers.get('X-POS-Revision'));
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw new Error('The local POS service did not provide a valid data revision.');
+  }
+  return revision;
 }
 
 export class LocalServiceRepository implements RestaurantRepository {
   async load(): Promise<AppData> {
-    return requestJson<AppData>('/api/data');
+    return (await this.loadSnapshot()).data;
   }
 
-  async save(data: AppData): Promise<void> {
-    await requestJson<{ ok: boolean }>('/api/data', {
+  async loadSnapshot(): Promise<LocalDataSnapshot> {
+    const { body, response } = await requestJsonResponse<AppData>('/api/data');
+    return { data: body, revision: responseRevision(response) };
+  }
+
+  async currentRevision(): Promise<number> {
+    const result = await requestJson<{ revision: number }>('/api/revision');
+    if (!Number.isSafeInteger(result.revision) || result.revision < 0) {
+      throw new Error('The local POS service returned an invalid data revision.');
+    }
+    return result.revision;
+  }
+
+  async save(data: AppData, revision?: number): Promise<number> {
+    if (!Number.isSafeInteger(revision) || (revision as number) < 0) {
+      throw new Error('The local register is missing its data revision. Reload before saving.');
+    }
+    const { body, response } = await requestJsonResponse<{ ok: boolean; revision: number }>('/api/data', {
       method: 'PUT',
       body: JSON.stringify(data),
+      headers: { 'X-POS-Revision': String(revision) },
     });
+    const savedRevision = Number.isSafeInteger(body.revision) && body.revision >= 0
+      ? body.revision
+      : responseRevision(response);
+    return savedRevision;
   }
 }
 
