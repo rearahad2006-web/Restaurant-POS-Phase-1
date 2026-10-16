@@ -74,6 +74,7 @@ onlyBuiltDependencies:
   - msw
   - better-sqlite3
   - unrs-resolver
+  - electron
 
 overrides:
   # replit uses linux-x64 only, we can exclude all other platforms

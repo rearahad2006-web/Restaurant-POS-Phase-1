@@ -36,6 +36,21 @@ Typecheck with:
 pnpm --filter @workspace/restaurant-pos run typecheck
 ```
 
+## Electron desktop shell (Phase 1)
+
+The Electron main process starts the existing SQLite HTTP service on an ephemeral loopback port and opens that same-origin URL. It uses `%LOCALAPPDATA%\JuniperPOS` for the database and backups, matching the existing Windows service. There is no installer or auto-updater in this phase.
+
+Electron 44.7.2 embeds Node 24.21.0. The current `better-sqlite3` 12.6.0 supports Node 24, but its native addon must still be rebuilt for Electron's ABI. The rebuild tool and Electron CLI require Node 22.12 or newer. The Electron rebuild command recompiles the POS workspace's native addon in place; do not run it in a checkout that must continue using the Node-based `start:local` launcher until the Node ABI is restored. Native rebuilding and Windows Electron startup have not been verified from this workspace.
+
+After installing the POS development dependencies, the explicit commands are:
+
+```sh
+pnpm --filter @workspace/restaurant-pos run electron:rebuild-native
+pnpm --filter @workspace/restaurant-pos run electron
+```
+
+The native rebuild should be moved to an isolated packaging/staging directory before using Electron and the existing Node launcher interchangeably.
+
 ## Development sign-in
 
 - Manager: `manager` / `2468`
