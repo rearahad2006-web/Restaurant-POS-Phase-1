@@ -40,16 +40,17 @@ pnpm --filter @workspace/restaurant-pos run typecheck
 
 The Electron main process starts the existing SQLite HTTP service on an ephemeral loopback port and opens that same-origin URL. It uses `%LOCALAPPDATA%\JuniperPOS` for the database and backups, matching the existing Windows service. There is no installer or auto-updater in this phase.
 
-Electron 44.7.2 embeds Node 24.21.0. The current `better-sqlite3` 12.6.0 supports Node 24, but its native addon must still be rebuilt for Electron's ABI. The rebuild tool and Electron CLI require Node 22.12 or newer. The Electron rebuild command recompiles the POS workspace's native addon in place; do not run it in a checkout that must continue using the Node-based `start:local` launcher until the Node ABI is restored. Native rebuilding and Windows Electron startup have not been verified from this workspace.
+Electron 44.7.2 embeds Node 24.21.0 and uses Electron ABI 149. The Node-based Windows launcher needs a Node-compatible `better-sqlite3` binary, so rebuilding the addon in the shared checkout would break that launcher.
 
-After installing the POS development dependencies, the explicit commands are:
+Prepare the Electron native addon only on **Windows x64**:
 
-```sh
-pnpm --filter @workspace/restaurant-pos run electron:rebuild-native
-pnpm --filter @workspace/restaurant-pos run electron
+```powershell
+pnpm --filter @workspace/restaurant-pos run electron:prepare-windows
 ```
 
-The native rebuild should be moved to an isolated packaging/staging directory before using Electron and the existing Node launcher interchangeably.
+The preparation script requires Node.js 22.12 or newer in the 22.x line, pnpm 10.26.1, the existing Linux-built `dist\public\index.html`, and the Windows C++ build tools required by `node-gyp`. It refuses to run on Linux or non-x64 systems. It copies the current workspace source into a new directory under `%LOCALAPPDATA%\RestaurantPOS-ElectronPreparation`, installs from the frozen lockfile there, and rebuilds `better-sqlite3` for Electron 44.7.2 / Windows x64. Database files, backups, environment files, `attached_assets`, and installed dependencies are excluded from the staged source copy.
+
+The rebuild and its output stay in that separate staging directory; the shared Node-compatible binary and `scripts\start-windows.cmd` are not rebuilt or overwritten. The script does not launch Electron or the POS, create an installer, or access `%LOCALAPPDATA%\JuniperPOS`. Windows-native preparation and startup have not been run or verified from this Linux workspace. Do not start the staged POS against a real restaurant profile; any later runtime check must use a separate disposable Windows profile or an explicit disposable `POS_DATA_DIR`.
 
 ## Development sign-in
 

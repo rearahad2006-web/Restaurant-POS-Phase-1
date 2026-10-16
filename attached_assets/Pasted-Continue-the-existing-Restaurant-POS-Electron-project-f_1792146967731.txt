@@ -1,0 +1,25 @@
+Continue the existing Restaurant POS Electron project from the latest available checkpoint or GitHub commit. Do not rebuild the application from scratch.
+
+**New-account prerequisite:** Preview is now working after fixing the missing dependencies. Before making any changes, verify the repository root, current branch and commit, working-tree status, and whether the Electron Phase 1 files survived the account migration. Preserve all existing changes and do not assume the newest Replit checkpoint was pushed to GitHub.
+
+**First, inspect only — do not launch the POS or connect to real restaurant data.**
+
+1. Report the current Git commit, branch, working-tree changes, and whether the latest Electron Phase 1 changes are present.
+2. Inspect the Electron main process and lifecycle scripts, POS `package.json`, `pnpm-workspace.yaml`, lockfile, Windows launcher, and README.
+3. Identify every installed `better-sqlite3` native binary and determine which Node or Electron ABI it targets, without modifying any binary.
+4. Confirm whether the current workspace actually contains the latest checkpoint. Do not assume that a Replit checkpoint is committed or pushed to GitHub.
+
+**Then prepare the next phase safely:**
+
+- Create an isolated, reproducible preparation workflow targeting **Windows x64 only**.
+- Never attempt a Linux cross-build.
+- Never overwrite the shared Node-compatible `better-sqlite3` binary.
+- Keep the existing Windows Node launcher working.
+- Preserve the SQLite database location, backups, permissions, sync/conflict protection, and existing POS features.
+- Do not launch the POS against real data.
+- Do not create or claim a tested Windows installer unless it has actually been built and tested.
+- If Windows-specific native preparation cannot safely run in this environment, provide exact Windows-side commands instead.
+
+Run the available tests, typecheck, production build, and `git diff --check`. Report the exact commit, changed files, commands and results, and remaining Windows-only steps. Make no unrelated changes and do not reset or discard existing work.
+
+**Stop and report before making changes** if Electron Phase 1 files are missing, the repository state is ambiguous, or the current working tree contains changes that cannot be safely preserved. Do not silently replace missing work with a fresh implementation.

@@ -11,7 +11,7 @@
     "start:local": "node ./server/index.mjs",
     "test": "node --test server/*.test.mjs electron/*.test.mjs",
     "electron": "electron .",
-    "electron:rebuild-native": "electron-rebuild -f -w better-sqlite3 --version 44.7.2",
+    "electron:prepare-windows": "node ./scripts/prepare-electron-windows.mjs",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
