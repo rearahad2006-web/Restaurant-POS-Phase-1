@@ -7,13 +7,75 @@ export interface RestaurantRepository {
 }
 
 const STORAGE_KEY = 'juniper-pos.phase1.data.v1';
+
+const STORAGE_COLLECTIONS = [
+  'users',
+  'tables',
+  'categories',
+  'menuItems',
+  'orders',
+  'payments',
+  'expenses',
+  'deals',
+  'businessDays',
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readStoredData(): Partial<AppData> | null {
+  let stored: string | null;
+  try {
+    stored = localStorage.getItem(STORAGE_KEY);
+  } catch (error) {
+    throw new Error(
+      'Could not access saved restaurant data in this browser. No migration file was created; check browser storage access and retry.',
+      { cause: error },
+    );
+  }
+
+  if (stored === null) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stored);
+  } catch (error) {
+    throw new Error(
+      `Saved restaurant data under "${STORAGE_KEY}" is malformed and was not changed. No migration file was created.`,
+      { cause: error },
+    );
+  }
+
+  if (!isRecord(parsed)) {
+    throw new Error(
+      `Saved restaurant data under "${STORAGE_KEY}" is not a valid data object. It was not changed; no migration file was created.`,
+    );
+  }
+
+  for (const collection of STORAGE_COLLECTIONS) {
+    if (Object.prototype.hasOwnProperty.call(parsed, collection) && !Array.isArray(parsed[collection])) {
+      throw new Error(
+        `Saved restaurant data field "${collection}" is malformed. The stored value was not changed; no migration file was created.`,
+      );
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'settings') && !isRecord(parsed.settings)) {
+    throw new Error(
+      'Saved restaurant settings are malformed. The stored value was not changed; no migration file was created.',
+    );
+  }
+
+  return parsed as Partial<AppData>;
+}
+
 export class BrowserLocalRepository implements RestaurantRepository {
   async load(): Promise<AppData> {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const old = JSON.parse(stored) as Partial<AppData>;
-        const merged = {
+    const old = readStoredData();
+    if (old) {
+      let merged: AppData;
+      try {
+        merged = {
           ...structuredClone(seededData),
           ...old,
           settings: { ...seededData.settings, ...(old.settings || {}) },
@@ -62,18 +124,31 @@ export class BrowserLocalRepository implements RestaurantRepository {
           dateTime: payment.dateTime || payment.createdAt || merged.orders.find(order => order.id === payment.orderId)?.createdAt || new Date().toISOString(),
           status: payment.status || (merged.orders.find(order => order.id === payment.orderId)?.status === 'cancelled' ? 'cancelled' : 'paid'),
         }));
-        await this.save(merged);
-        return merged;
+      } catch (error) {
+        throw new Error(
+          'Saved restaurant data could not be safely loaded. The browser value was not intentionally changed, and no migration file was created.',
+          { cause: error },
+        );
       }
-      const fresh = structuredClone(seededData);
-      await this.save(fresh);
-      return fresh;
-    } catch {
-      return structuredClone(seededData);
+
+      await this.save(merged);
+      return merged;
     }
+
+    const fresh = structuredClone(seededData);
+    await this.save(fresh);
+    return fresh;
   }
   async save(data: AppData, _revision?: number): Promise<void> {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    const serialized = JSON.stringify(data);
+    try {
+      localStorage.setItem(STORAGE_KEY, serialized);
+    } catch (error) {
+      throw new Error(
+        'Could not save register data to browser storage. The register will not continue with unsaved data; resolve the storage issue and retry.',
+        { cause: error },
+      );
+    }
   }
 }
 export const repository: RestaurantRepository = new BrowserLocalRepository();

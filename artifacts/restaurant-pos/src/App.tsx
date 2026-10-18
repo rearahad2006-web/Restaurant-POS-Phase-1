@@ -16,6 +16,7 @@ import {
 } from './storage/local-service';
 import { refreshRegisterSnapshot } from './storage/register-sync.mjs';
 import {
+  BrowserStorageStatus,
   LocalImportGate,
   LocalLoginGate,
   LocalManagerSetupGate,
@@ -225,6 +226,13 @@ function App() {
       });
     }
   }, []);
+
+  const retryBrowserStorageLoad = () => {
+    setServiceError('');
+    void loadSnapshot().then(acceptSnapshot).catch(error => {
+      setServiceError(error instanceof Error ? error.message : 'Could not load saved register data from this browser.');
+    });
+  };
 
   const startSaveLoop = (): Promise<void> => {
     if (saveLoopRef.current) return saveLoopRef.current;
@@ -449,6 +457,9 @@ function App() {
     setToastText(visibleMessage);
     window.setTimeout(() => setToastText(''), 2600);
   };
+  if (!usesLocalSqlite && serviceError) {
+    return <BrowserStorageStatus message={serviceError} onRetry={retryBrowserStorageLoad} />;
+  }
   if (usesLocalSqlite) {
     if (serviceLoading) {
       return <div className="login-screen"><div className="login-art"><div className="login-brand"><div className="brand-mark">J</div><div><div className="brand-name">Juniper &amp; Hearth</div><div className="brand-sub">Local service desk</div></div></div><div className="login-hero"><h1>Opening the local register.</h1><p>Checking the SQLite service on this computer.</p></div><span className="login-food-note">Your register data stays on this computer.</span></div><div className="login-form-side"><div className="panel" style={{ padding: 24, width: 320 }}><div className="stat-label">LOCAL DATABASE</div><div className="stat-value">Connecting…</div></div></div></div>;
@@ -1726,7 +1737,7 @@ function SettingsPage() {
         <div className="panel-head"><div><div className="eyebrow">DATA SAFETY</div><h2 className="panel-title">Export and backup</h2></div><span className="badge">{usesLocalSqlite?'Local SQLite':'Browser storage'}</span></div>
         <p className="page-subtitle">{usesLocalSqlite?'Create a verified SQLite copy on this computer. The JSON export can be transferred to another empty local database.':'Download a one-time migration file to transfer this register to a local Windows database.'} Migration files contain business records; staff PINs are intentionally excluded. Store exported files securely.</p>
         <div className="settings-actions" style={{justifyContent:'flex-start',gap:10}}>
-          <button className="btn" type="button" onClick={()=>{downloadMigrationFile(data);setBackupError('');toast('Migration JSON downloaded. Staff PINs were excluded.');}}>Download migration JSON</button>
+          <button className="btn" type="button" onClick={()=>{try{downloadMigrationFile(data);setBackupError('');toast('Migration JSON downloaded. Staff PINs were excluded.');}catch(error){setBackupError(error instanceof Error?error.message:'Migration export could not be created. Register data was not exported.');}}}>Download migration JSON</button>
           {usesLocalSqlite&&<button className="btn btn-primary" type="button" onClick={()=>void createBackup()}>Create verified SQLite backup</button>}
         </div>
         {backupError&&<p className="validation" role="alert">{backupError}</p>}

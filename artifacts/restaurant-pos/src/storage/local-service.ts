@@ -189,7 +189,10 @@ export const localService = {
   },
 };
 
-export function downloadMigrationFile(data: AppData): void {
+export function downloadMigrationFile(data: AppData | null | undefined): void {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.users)) {
+    throw new Error('Register data has not been loaded safely; no migration file was created.');
+  }
   const transfer: AppData = {
     ...data,
     users: data.users.map(user => ({

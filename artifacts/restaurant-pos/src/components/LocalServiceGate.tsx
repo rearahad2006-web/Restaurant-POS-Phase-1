@@ -191,3 +191,12 @@ export function LocalServiceStatus({ message, onRetry }: { message: string; onRe
     </GateLayout>
   );
 }
+
+export function BrowserStorageStatus({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <GateLayout eyebrow="BROWSER STORAGE" title="Saved register data could not be loaded." description="The register is blocked from opening with fallback data or creating a migration export. Keep this browser profile intact while resolving the storage issue.">
+      <div className="validation" role="alert">{message}</div>
+      <button className="btn btn-primary login-submit" type="button" onClick={onRetry}>Retry loading saved data</button>
+    </GateLayout>
+  );
+}
