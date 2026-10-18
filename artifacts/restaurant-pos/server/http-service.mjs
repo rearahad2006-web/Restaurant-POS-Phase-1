@@ -358,7 +358,6 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
       return;
     }
     if (route === 'POST /api/import') {
-      if (!isEmptyDatabase(db)) throw new HttpError(409, 'Import is allowed only into an empty database; existing data was not changed.');
       const source = await readJsonBody(request);
       const validated = validateAppData(source);
       const resetPinData = {
@@ -366,6 +365,13 @@ export async function createPosHttpService({ dataDir, staticDir, port = 0 } = {}
         users: validated.users.map(user => ({ ...user, password: '', developmentOnly: false })),
       };
       const safeJson = JSON.stringify(resetPinData);
+      if (!isEmptyDatabase(db)) {
+        const requestedHash = createHash('sha256').update(safeJson, 'utf8').digest('hex');
+        const priorHash = db.prepare("SELECT value FROM app_meta WHERE key = 'legacy_import_sha256'").get()?.value;
+        if (priorHash !== requestedHash) {
+          throw new HttpError(409, 'Import is allowed only into an empty database; existing data was not changed.');
+        }
+      }
       const result = await importLegacyBackup(db, backupDir, safeJson);
       sendJson(response, 200, { ...result, bootstrap: { ...getBootstrapInfo(db, false), needsImport: isEmptyDatabase(db) } });
       return;

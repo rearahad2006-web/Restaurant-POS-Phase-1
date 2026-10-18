@@ -127,6 +127,33 @@ async function requestJson(base, route, { method = 'GET', cookie, body, headers 
   return { response, body: payload, text };
 }
 
+async function requestRawJson(base, route, bodyText) {
+  const response = await fetch(`${base}${route}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: bodyText,
+  });
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    // Keep the raw response available for useful assertions.
+  }
+  return { response, body: payload, text };
+}
+
+async function startEmptyImportService(t, prefix) {
+  const directory = await temporaryDirectory(t, prefix);
+  const service = await createPosHttpService({
+    dataDir: path.join(directory, 'service-data'),
+    staticDir: directory,
+    port: 0,
+  });
+  t.after(() => service.close());
+  return { service, base: `http://127.0.0.1:${service.port}` };
+}
+
 function sessionCookie(response) {
   return response.headers.get('set-cookie')?.split(';', 1)[0] ?? '';
 }
@@ -297,6 +324,92 @@ test('legacy import rejects a different backup once POS records exist', async t 
 
   assert.deepEqual(databaseRecordCounts(db), countsAfterFirstImport);
   assert.equal(loadAppData(db).settings.name, transfer.settings.name);
+});
+
+test('HTTP import accepts a valid legacy backup into a fresh isolated database', async t => {
+  const { service, base } = await startEmptyImportService(t, 'restaurant-pos-http-import-');
+  const transfer = makeFixture();
+  const result = await requestRawJson(base, '/api/import', JSON.stringify(transfer));
+
+  assert.equal(result.response.status, 200, result.text);
+  assert.equal(result.body.alreadyImported, false);
+  assert.equal(result.body.bootstrap.needsImport, false);
+  assert.equal(result.body.bootstrap.needsManagerSetup, true);
+  assert.equal(databaseRecordCounts(service.db).orders, 1);
+  assert.equal(databaseRecordCounts(service.db).payments, 1);
+
+  const imported = loadAppData(service.db);
+  assert.deepEqual(imported.settings, transfer.settings);
+  assert.deepEqual(imported.payments, transfer.payments);
+  assert.deepEqual(imported.orders[0].items, transfer.orders[0].items);
+  assert.deepEqual(imported.orders[0].deals, transfer.orders[0].deals);
+  assert.equal(imported.orders[0].payment.id, transfer.payments[0].id);
+  assert.deepEqual(imported.expenses, transfer.expenses);
+  assert.deepEqual(imported.businessDays, transfer.businessDays);
+  assert.deepEqual(imported.users.map(user => user.role), ['Manager', 'Cashier']);
+});
+
+test('repeating the exact HTTP import request is a successful no-op', async t => {
+  const { service, base } = await startEmptyImportService(t, 'restaurant-pos-http-import-retry-');
+  const payloadText = JSON.stringify(makeFixture());
+
+  const first = await requestRawJson(base, '/api/import', payloadText);
+  assert.equal(first.response.status, 200, first.text);
+  assert.equal(first.body.alreadyImported, false);
+  const countsAfterFirstImport = databaseRecordCounts(service.db);
+  const dataAfterFirstImport = loadAppData(service.db);
+  const revisionAfterFirstImport = getDataRevision(service.db);
+  const backupsAfterFirstImport = await readdir(service.backupDir);
+
+  const retry = await requestRawJson(base, '/api/import', payloadText);
+
+  assert.equal(retry.response.status, 200, retry.text);
+  assert.equal(retry.body.alreadyImported, true);
+  assert.equal(retry.body.sha256, first.body.sha256);
+  assert.equal(retry.body.backupPath, first.body.backupPath);
+  assert.deepEqual(databaseRecordCounts(service.db), countsAfterFirstImport);
+  assert.deepEqual(loadAppData(service.db), dataAfterFirstImport);
+  assert.equal(getDataRevision(service.db), revisionAfterFirstImport);
+  assert.deepEqual(await readdir(service.backupDir), backupsAfterFirstImport);
+});
+
+test('HTTP import rejects a different backup without changing imported records or snapshots', async t => {
+  const { service, base } = await startEmptyImportService(t, 'restaurant-pos-http-import-conflict-');
+  const transfer = makeFixture();
+  const first = await requestRawJson(base, '/api/import', JSON.stringify(transfer));
+  assert.equal(first.response.status, 200, first.text);
+
+  const dataBeforeConflict = loadAppData(service.db);
+  const countsBeforeConflict = databaseRecordCounts(service.db);
+  const revisionBeforeConflict = getDataRevision(service.db);
+  const differentTransfer = structuredClone(transfer);
+  differentTransfer.settings.name = 'Must not replace imported settings';
+  differentTransfer.payments[0].reference = 'Must not replace imported payment';
+  differentTransfer.orders[0].items[0].name = 'Must not replace historical item snapshot';
+  differentTransfer.orders[0].deals[0].name = 'Must not replace historical deal snapshot';
+  differentTransfer.orders[0].deals[0].items[0].name = 'Must not replace historical deal item snapshot';
+
+  const conflict = await requestRawJson(base, '/api/import', JSON.stringify(differentTransfer));
+
+  assert.equal(conflict.response.status, 409, conflict.text);
+  assert.match(conflict.body.error, /existing data was not changed/);
+  assert.deepEqual(databaseRecordCounts(service.db), countsBeforeConflict);
+  assert.deepEqual(loadAppData(service.db), dataBeforeConflict);
+  assert.equal(getDataRevision(service.db), revisionBeforeConflict);
+});
+
+test('malformed HTTP import input is rejected without partial writes', async t => {
+  const { service, base } = await startEmptyImportService(t, 'restaurant-pos-http-import-invalid-');
+  const countsBefore = databaseRecordCounts(service.db);
+  const revisionBefore = getDataRevision(service.db);
+
+  const malformed = await requestRawJson(base, '/api/import', '{"orders":');
+
+  assert.equal(malformed.response.status, 400, malformed.text);
+  assert.match(malformed.body.error, /valid JSON/);
+  assert.deepEqual(databaseRecordCounts(service.db), countsBefore);
+  assert.equal(getDataRevision(service.db), revisionBefore);
+  assert.deepEqual(await readdir(service.backupDir), []);
 });
 
 test('manager setup reactivates a preserved manager account with a fresh PIN', async t => {
