@@ -4,7 +4,7 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import Database from 'better-sqlite3';
 import { createPosHttpService } from './http-service.mjs';
 import {
@@ -20,6 +20,13 @@ import {
 } from './database.mjs';
 
 const stamp = '2026-10-13T08:00:00.000Z';
+const temporaryDirectories = new Set();
+
+after(async () => {
+  for (const directory of temporaryDirectories) {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 export function makeFixture() {
   const payment = {
@@ -73,7 +80,7 @@ export function makeFixture() {
 
 async function temporaryDirectory(t, prefix) {
   const directory = await mkdtemp(path.join(tmpdir(), prefix));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  temporaryDirectories.add(directory);
   return directory;
 }
 
