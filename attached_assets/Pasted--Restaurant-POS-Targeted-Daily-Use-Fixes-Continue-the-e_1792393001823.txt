@@ -1,0 +1,76 @@
+# Restaurant POS — Targeted Daily-Use Fixes
+
+Continue the existing Restaurant POS project. Do not rebuild, redesign, or replace existing architecture.
+
+## Mandatory safety rules
+
+- Inspect the actual code and Git status before changing anything.
+- Preserve the existing React + TypeScript + Vite application, local Node service, SQLite database, repository abstraction, and Windows launcher.
+- Create and verify a recoverable checkpoint before modifying code.
+- Never reset, delete, or overwrite the live database.
+- Preserve every historical order, payment, expense, saved item snapshot, business-day record, staff account, role, and setting.
+- Do not change existing historical order IDs.
+- Do not modify unrelated features.
+- Keep changes small and report exact files changed and test results.
+- Stop and explain any architectural blocker before risky changes.
+
+## Issue 1 — Consistent restaurant branding
+
+Inspect the existing restaurant logo, branding settings, shared layout, and receipt components.
+
+- Reuse the existing ISB Doger Saji logo and restaurant settings.
+- Ensure branding appears consistently on appropriate screens: dashboard, POS/billing, orders, reports, manager pages, and settings.
+- Check whether missing branding results from inconsistent shared components, incorrect asset paths, conditional rendering, or settings not being loaded.
+- Preserve the existing visual design and user-configured restaurant details.
+- Ensure logo assets load correctly in the Windows local-service mode.
+- Preserve appropriate print and receipt branding.
+- Do not hardcode a second logo or duplicate restaurant settings.
+
+## Issue 2 — Dashboard statistics must match their labels
+
+Inspect the dashboard's data queries and date-filter logic.
+
+- The dashboard's Completed orders and Cancelled orders cards should show counts for **today**, using the register's `Asia/Karachi` timezone.
+- Do not change the Reports page's existing date-filter behavior.
+- Keep historical records and all-time data intact.
+- If useful, expose all-time totals separately with accurate labels.
+- Count completed/paid orders and cancelled orders according to the existing domain rules. Do not count the same order twice.
+- Handle midnight boundaries correctly and use consistent date calculations across the dashboard.
+- Verify that orders from previous dates do not appear in today's counts.
+
+## Issue 3 — Daily sequential order numbers
+
+Required format: `JH-001`, `JH-002`, `JH-003`, etc.
+
+- Inspect the existing order-number generation, SQLite schema, repository, and transaction boundaries.
+- New orders should begin at `JH-001` for each new **calendar date in Asia/Karachi**, then increment for that date.
+- Do not confuse calendar-day numbering with the business-day session ID. A restaurant session may cross midnight, but numbering follows the stated calendar-date rule.
+- Keep existing order IDs and historical receipts unchanged.
+- Do not reset or renumber historical orders.
+- Prevent duplicate numbers when multiple orders are created quickly, the application restarts, or a request is retried.
+- Use a durable, transaction-safe counter or another robust SQLite-backed mechanism with appropriate uniqueness protection.
+- Handle failed order creation without corrupting the sequence.
+- If the existing schema or requirements create a conflict, stop and explain it before migration.
+- Verify that the counter persists across service restarts and that numbering restarts on the next local calendar date.
+
+## Tests and acceptance criteria
+
+1. Run the available type checks, automated tests, and production build.
+2. Add focused tests for branding visibility, date-filtered dashboard counts, midnight boundaries, sequential daily numbering, duplicate prevention, restart persistence, and historical-order preservation.
+3. Verify existing Reports, payments, receipts, and business-day workflows still work.
+4. Verify the Windows local-service mode continues to work.
+5. Do not run destructive tests against the live production database. Use an isolated temporary test database.
+6. Do not implement Windows packaging or physical-printer integration as part of this task.
+
+## Required final report
+
+Report:
+
+- Initial findings and any existing implementation already present.
+- Files changed and the purpose of each change.
+- Database/schema changes, if any.
+- Exact test, type-check, and build results.
+- Remaining manual Windows verification steps.
+- Confirmation that historical records were not reset or renumbered.
+
+Implement the fixes only after inspection confirms the safest approach.
