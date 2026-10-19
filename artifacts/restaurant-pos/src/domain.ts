@@ -21,11 +21,15 @@ export const makeId = () => `${Date.now().toString(36)}-${Math.random().toString
 export const now = () => new Date().toISOString();
 export const money = (value: number, currency = 'PKR') => `${currency} ${Number(value || 0).toLocaleString('en-PK', { maximumFractionDigits: 2 })}`;
 const stamp = now();
+const developmentUsers: User[] = import.meta.env.DEV
+  ? [
+      { id: 'user-manager-dev', name: 'Juniper Manager', username: 'manager', password: '2468', role: 'Manager', developmentOnly: true, createdAt: stamp },
+      { id: 'user-cashier-1', name: 'Ayesha Khan', username: 'cashier', password: '1234', role: 'Cashier', developmentOnly: true, createdAt: stamp },
+    ]
+  : [];
+
 export const seededData: AppData = {
-  users: [
-    { id: 'user-manager-dev', name: 'Juniper Manager', username: 'manager', password: '2468', role: 'Manager', developmentOnly: true, createdAt: stamp },
-    { id: 'user-cashier-1', name: 'Ayesha Khan', username: 'cashier', password: '1234', role: 'Cashier', developmentOnly: true, createdAt: stamp },
-  ],
+  users: developmentUsers,
   settings: { id: 'restaurant-1', name: 'Juniper & Hearth', address: '18 Garden Lane, Lahore', phone: '+92 300 555 0184', currency: 'PKR', receiptFooter: 'Thank you for sharing our table.', printWidth: 'narrow', compactDisplay: false, logoDataUrl: '' },
   tables: [{ id: 'table-1', name: 'Table 1', capacity: 4, createdAt: stamp, updatedAt: stamp }],
   categories: [
